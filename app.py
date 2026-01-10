@@ -18,7 +18,7 @@ def load_data():
     # GANTI LINK DI BAWAH INI DENGAN LINK "EXPORT CSV" ANDA
     # Pastikan akhiran linknya adalah "/export?format=csv"
     # -----------------------------------------------------------
-    sheet_url = 'https://docs.google.com/spreadsheets/d/10yl3BkTUCyM7TIP5Pm9KcMbib4epuZDEfoo5egqU5pg/export?format=csv'
+    sheet_url = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRqUOC7mKPH8FYtrmXUcFBa3zYQfh2sdC5sPFUFafInQG4wE-6bcBI3OEPLKCVuMdm2rZYgXzkBCcnS/pub?gid=0&single=true&output=csv'
     
     try:
         # Pandas bisa membaca langsung dari URL CSV
