@@ -16,7 +16,7 @@ def load_data():
     # -----------------------------------------------------------
     # GANTI LINK DI BAWAH INI DENGAN LINK ANDA
     # -----------------------------------------------------------
-    sheet_url = 'https://docs.google.com/spreadsheets/d/1A2b3C4d5E6fG7h8i9j/export?format=csv' 
+    sheet_url = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRqUOC7mKPH8FYtrmXUcFBa3zYQfh2sdC5sPFUFafInQG4wE-6bcBI3OEPLKCVuMdm2rZYgXzkBCcnS/pub?gid=0&single=true&output=csv' 
     # ^^^ JANGAN LUPA GANTI ID SHEET DI ATAS ^^^
 
     try:
@@ -164,3 +164,4 @@ if df is not None:
                 st.success("✅ Selesai! Silakan salin data di atas ke sistem faktur.")
             else:
                 st.warning("Tidak ada item yang terdeteksi.")
+
