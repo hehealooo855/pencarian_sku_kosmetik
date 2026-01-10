@@ -7,31 +7,39 @@ import re
 # --- KONFIGURASI HALAMAN ---
 st.set_page_config(page_title="Pencarian SKU Pintar", page_icon="🔍")
 
-# Judul dan Deskripsi
-st.title("🔍 Smart SKU Search")
-st.markdown("Ketik pesan dari sales (PO) apa adanya, sistem akan mencari SKU yang paling cocok.")
+st.title("🔍 Smart SKU Search (Google Sheet Version)")
+st.markdown("Database terhubung langsung ke Google Sheet. Data update otomatis setiap 10 menit.")
 
-# --- LOAD DATA (DENGAN CACHE AGAR CEPAT) ---
-@st.cache_data
+# --- LOAD DATA DARI GOOGLE SHEET ---
+# ttl=600 artinya data akan di-refresh dari Google Sheet setiap 600 detik (10 menit)
+@st.cache_data(ttl=600)
 def load_data():
-    # GANTI NAMA FILE DI SINI SESUAI FILE ANDA DI FOLDER
-    file_path = 'Laporan_Sales_Profesional_2026-01-09.xlsx - Sales Data.csv'
+    # -----------------------------------------------------------
+    # GANTI LINK DI BAWAH INI DENGAN LINK "EXPORT CSV" ANDA
+    # Pastikan akhiran linknya adalah "/export?format=csv"
+    # -----------------------------------------------------------
+    sheet_url = 'https://docs.google.com/spreadsheets/d/10yl3BkTUCyM7TIP5Pm9KcMbib4epuZDEfoo5egqU5pg/export?format=csv'
     
     try:
-        df = pd.read_csv(file_path)
-        # Pre-processing
+        # Pandas bisa membaca langsung dari URL CSV
+        df = pd.read_csv(sheet_url)
+        
+        # Pre-processing (Membersihkan data agar mudah dicari AI)
         df['Full_Text'] = df['Merk'].astype(str) + ' ' + df['Nama Barang'].astype(str)
         df['Clean_Text'] = df['Full_Text'].apply(lambda x: re.sub(r'[^a-z0-9\s]', ' ', str(x).lower()))
         return df
     except Exception as e:
-        st.error(f"Gagal membaca file: {e}")
+        st.error("Gagal mengambil data dari Google Sheet.")
+        st.error(f"Error detail: {e}")
         return None
 
 df = load_data()
 
-# --- LATIH MODEL AI (DENGAN CACHE) ---
+# --- LATIH MODEL AI ---
 @st.cache_resource
 def train_model(data):
+    if data is None or data.empty:
+        return None, None
     vectorizer = TfidfVectorizer(analyzer='char_wb', ngram_range=(3, 5))
     matrix = vectorizer.fit_transform(data)
     return vectorizer, matrix
@@ -42,8 +50,8 @@ if df is not None:
     # --- UI PENCARIAN ---
     query = st.text_input("Masukkan PO Sales:", placeholder="Contoh: skin1004 cleansing oil kecil")
 
-    if query:
-        # LOGIKA PENCARIAN (Sama seperti sebelumnya)
+    if query and tfidf_matrix is not None:
+        # LOGIKA PENCARIAN
         query_clean = re.sub(r'[^a-z0-9\s]', ' ', query.lower())
         query_vec = tfidf_vectorizer.transform([query_clean])
         similarity_scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
@@ -78,7 +86,7 @@ if df is not None:
                 found_any = True
                 col1, col2 = st.columns([1, 4])
                 with col1:
-                    st.metric(label="Kecocokan", value=f"{int(score*100)}%")
+                    st.metric(label="Akurasi", value=f"{int(score*100)}%")
                 with col2:
                     merk = df.iloc[index]['Merk']
                     barang = df.iloc[index]['Nama Barang']
@@ -88,6 +96,11 @@ if df is not None:
         
         if not found_any:
             st.warning("Barang tidak ditemukan. Coba kata kunci lain.")
+            
+    # Tampilkan tombol refresh manual jika admin baru saja update data
+    if st.button("Refresh Database Sekarang"):
+        st.cache_data.clear()
+        st.experimental_rerun()
 
 else:
-    st.info("Mohon masukkan file CSV ke dalam folder yang sama dengan script ini.")
+    st.info("Sedang menghubungkan ke Google Sheet...")
