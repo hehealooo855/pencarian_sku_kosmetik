@@ -6,27 +6,49 @@ import re
 
 # --- KONFIGURASI HALAMAN ---
 st.set_page_config(page_title="AI Fakturis Enterprise", page_icon="🏢", layout="wide")
+st.title("🏢 AI Fakturis Enterprise (Auto-Correct)")
+st.markdown("Fitur Baru: **Alias Brand** (Sekawan->Ainie), **Sinonim** (Zaitun->Olive Oil), & **Pewarisan Ukuran**.")
 
-st.title("🏢 AI Fakturis Enterprise (Strict Brand)")
-st.markdown("Fitur Baru: **Brand Lock**. Jika header 'SYB', sistem 100% mengabaikan brand lain (Avione, dll).")
+# --- 1. KAMUS & KONFIGURASI PINTAR ---
 
-# --- 1. KAMUS "SEMUA VARIAN" (UPDATE SESUAI KATALOG ANDA) ---
-# Tambahkan varian produk di sini agar sales yang malas ngetik tetap terdeteksi
+# A. AUTO VARIANTS (Untuk 'Semua Varian')
 AUTO_VARIANTS = {
-    # Varian SYB
     "eye mask": ["Gold", "Osmanthus", "Seaweed", "Black Pearl"], 
     "lip mask": ["Peach", "Strawberry", "Blueberry"],
     "sheet mask": ["Aloe", "Pomegranate", "Honey", "Olive", "Blueberry"],
     "powder mask": ["Greentea", "Lavender", "Peppermint", "Strawberry"],
-    "jelly mask": ["Cucumber", "Blueberry", "DNA Salmon", "Mugwort", "Watermelon"],
-    # Varian Lain
-    "hairmask": ["Susu", "Ginseng", "Coklat", "Strawberry"],
+}
+
+# B. BRAND ALIASES (Mapping Nama Sales -> Nama Database)
+# Kiri: Apa yang sales ketik | Kanan: Apa yang tertulis di Kolom Merk Database
+BRAND_ALIASES = {
+    "sekawan": "AINIE",  # <-- Request Anda Terpenuhi
+    "javinci": "JAVINCI",
+    "thai": "THAI",
+    "syb": "SYB",
+    "diosys": "DIOSYS"
+}
+
+# C. KEYWORD REPLACEMENTS (Kamus Terjemahan & Typo)
+# Kiri: Kata Sales | Kanan: Kata Database
+KEYWORD_REPLACEMENTS = {
+    "zaitun": "olive oil",         # <-- Request Anda Terpenuhi
+    "kemiri": "candlenut",         # Jaga-jaga kalau database pakai bahasa inggris
+    "n.black": "natural black",    # Memperbaiki singkatan Diosys
+    "n black": "natural black",
+    "d.brwon": "dark brown",       # Memperbaiki typo sales
+    "d.brown": "dark brown",
+    "brwon": "brown",
+    "coffe": "coffee",
+    "cerry": "cherry",
+    "shunsine": "sunshine",
+    "temulawak": "temulawak",      # Jika ada translasi khusus
 }
 
 # --- 2. LOAD DATA ---
 @st.cache_data(ttl=600)
 def load_data():
-    # GANTI LINK DI SINI DENGAN LINK GOOGLE SHEET CSV ANDA
+    # GANTI LINK DI SINI DENGAN LINK CSV GOOGLE SHEET ANDA
     sheet_url = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRqUOC7mKPH8FYtrmXUcFBa3zYQfh2sdC5sPFUFafInQG4wE-6bcBI3OEPLKCVuMdm2rZYgXzkBCcnS/pub?gid=0&single=true&output=csv'
     
     try:
@@ -34,7 +56,6 @@ def load_data():
         df['Merk'] = df['Merk'].astype(str).str.strip()
         df['Nama Barang'] = df['Nama Barang'].astype(str).str.strip()
         df['Full_Text'] = df['Merk'] + ' ' + df['Nama Barang']
-        # Membersihkan teks database
         df['Clean_Text'] = df['Full_Text'].apply(lambda x: re.sub(r'[^a-z0-9\s]', ' ', str(x).lower()))
         return df
     except Exception as e:
@@ -54,12 +75,8 @@ def train_model(data):
 if df is not None:
     tfidf_vectorizer, tfidf_matrix = train_model(df['Clean_Text'])
 
-# --- 4. FUNGSI PENCARIAN SKU (DENGAN BRAND FILTER) ---
+# --- 4. FUNGSI PENCARIAN SKU (LOGIKA BOOSTING UKURAN) ---
 def search_sku(query, brand_filter=None):
-    """
-    Mencari barang.
-    Jika brand_filter diisi (misal 'SYB'), maka barang merk lain SKOR-nya DI-NOL-KAN.
-    """
     if not query or len(query) < 2: return None, 0.0, ""
 
     query_clean = re.sub(r'[^a-z0-9\s]', ' ', query.lower())
@@ -68,40 +85,41 @@ def search_sku(query, brand_filter=None):
     
     final_scores = similarity_scores.copy()
 
-    # === LOGIKA BRAND LOCK (KACAMATA KUDA) ===
+    # A. LOGIKA BRAND LOCK
     if brand_filter:
-        # Buat "Topeng" (Mask). True jika merk sesuai, False jika tidak.
-        # Kita pakai str.contains agar jika filter "SYB", merk "SYB Cosmetics" tetap masuk
-        # Tapi "Avione" akan jadi False.
-        brand_mask = df['Merk'].astype(str).str.lower().str.contains(brand_filter.lower(), regex=False).to_numpy()
-        
-        # Kalikan skor dengan mask. 
-        # Jika False (0), skor jadi 0. Jika True (1), skor tetap.
+        # Cek apakah merk di database mengandung kata kunci brand_filter
+        brand_mask = df['Merk'].str.lower().str.contains(brand_filter.lower(), regex=False, na=False).to_numpy()
         final_scores = final_scores * brand_mask
 
-    # Logika Boosting untuk Besar/Kecil
+    # B. LOGIKA BOOSTING UKURAN (Sangat Penting untuk Diosys)
+    # Jika sales minta 100ml, kita bantai skor yang 45ml
+    if "100ml" in query_clean:
+        for idx, row in df.iterrows():
+            if "100ml" in row['Clean_Text']: 
+                final_scores[idx] += 0.4  # Boost Kuat
+            elif "45ml" in row['Clean_Text'] or "45 ml" in row['Clean_Text']: 
+                final_scores[idx] -= 0.5  # Hukuman Berat (Agar 45ml tenggelam)
+
+    # Logika umum Besar/Kecil
     if "kecil" in query_clean:
         for idx, row in df.iterrows():
-            if re.search(r'\b(30ml|50gr|50ml|60ml|kecil|mini|sachet|sct)\b', row['Clean_Text']): final_scores[idx] += 0.25
+            if re.search(r'\b(30ml|50gr|50ml|45ml|60ml|kecil|mini|sachet)\b', row['Clean_Text']): final_scores[idx] += 0.25
             elif re.search(r'\b(200ml|500ml|besar|jumbo|1000ml)\b', row['Clean_Text']): final_scores[idx] -= 0.15
             
     if "besar" in query_clean:
         for idx, row in df.iterrows():
             if re.search(r'\b(200ml|250ml|500ml|1000ml|besar|jumbo)\b', row['Clean_Text']): final_scores[idx] += 0.25
-            elif re.search(r'\b(30ml|50gr|kecil|mini|sachet|sct)\b', row['Clean_Text']): final_scores[idx] -= 0.15
+            elif re.search(r'\b(30ml|50gr|kecil|mini|sachet)\b', row['Clean_Text']): final_scores[idx] -= 0.15
 
     best_idx = final_scores.argmax()
     best_score = final_scores[best_idx]
     
-    # Threshold 0.1 (Cukup rendah agar typo parah tetap ketemu, tapi aman karena sudah filter brand)
     if best_score > 0.1:
         return f"{df.iloc[best_idx]['Merk']} - {df.iloc[best_idx]['Nama Barang']}", best_score, df.iloc[best_idx]['Merk']
     else:
-        # Jika skor 0 (artinya barang SYB dengan nama itu tidak ada), kembalikan Not Found
-        # Jangan kembali ke Avione!
-        return "❌ TIDAK DITEMUKAN (Cek Database)", 0.0, ""
+        return "❌ TIDAK DITEMUKAN", 0.0, ""
 
-# --- 5. LOGIKA PARSING PO ---
+# --- 5. LOGIKA PARSING PO (DENGAN SINONIM & ALIAS) ---
 def parse_po_complex(text):
     lines = text.split('\n')
     results = []
@@ -113,85 +131,105 @@ def parse_po_complex(text):
     
     store_name = lines[0].strip() if lines else "Unknown Store"
     
-    # Ambil daftar merk dari database untuk deteksi header
-    known_brands = df['Merk'].str.lower().unique().tolist() if df is not None else []
+    # Ambil daftar merk asli database
+    db_brands = df['Merk'].str.lower().unique().tolist() if df is not None else []
 
     for line in lines[1:]: 
         line = line.strip()
         if not line or line == "-": continue
         
-        # A. Regex Qty, Bonus, Diskon
-        qty_match = re.search(r'(per\s*)?(\d+)?\s*(pcs|pc|lsn|lusin|box|kotak|btl|botol|pack|kotak)', line, re.IGNORECASE)
+        # 1. PRE-PROCESS SINONIM (Zaitun -> Olive Oil)
+        # Kita ganti kata-kata sales dengan kata database sebelum diproses
+        words = line.lower().split()
+        replaced_words = []
+        for w in words:
+            # Bersihkan tanda baca nempel (misal "zaitun,")
+            clean_w = w.strip(",.-")
+            if clean_w in KEYWORD_REPLACEMENTS:
+                replaced_words.append(KEYWORD_REPLACEMENTS[clean_w])
+            else:
+                replaced_words.append(w)
+        line_processed = " ".join(replaced_words)
+
+        # 2. EKSTRAKSI ANGKA
+        qty_match = re.search(r'(per\s*)?(\d+)?\s*(pcs|pc|lsn|lusin|box|kotak|btl|botol|pack|kotak)', line_processed, re.IGNORECASE)
         qty_str = qty_match.group(0) if qty_match else ""
         
-        bonus_match = re.search(r'\(?(\d+\s*\+\s*\d+)\)?(?!%)', line)
+        bonus_match = re.search(r'\(?(\d+\s*\+\s*\d+)\)?(?!%)', line_processed)
         bonus_str = bonus_match.group(1) if bonus_match else ""
         
-        disc_match = re.search(r'\(?([\d\+\.\s]+%)\)?', line)
+        disc_match = re.search(r'\(?([\d\+\.\s]+%)\)?', line_processed)
         disc_str = disc_match.group(1) if disc_match else ""
         
-        # B. Bersihkan Teks
-        clean_line = line
+        # 3. BERSIHKAN TEKS
+        clean_line = line_processed
         if qty_str: clean_line = clean_line.replace(qty_str, "")
         if bonus_str: clean_line = clean_line.replace(bonus_match.group(0), "")
         if disc_str: clean_line = clean_line.replace(disc_match.group(0), "")
         
         clean_keyword = re.sub(r'^[\s\-\.]+', '', clean_line).strip()
         
-        # C. Deteksi Header (Brand / Kategori)
+        # 4. DETEKSI HEADER (BRAND / KATEGORI)
         is_item = False
         if qty_match: is_item = True 
         
         if not is_item:
             lower_key = clean_keyword.lower()
             
-            # Cek Ganti Brand
+            # Cek Alias Brand dulu (Sekawan -> Ainie)
             found_brand_header = False
-            for brand in known_brands:
-                # Cek exact word match atau startswith agar akurat
-                # Misal: "SYB" match "syb", "syb kosmetik"
-                if lower_key == brand or lower_key.startswith(brand + " "):
-                    current_brand = brand 
-                    current_category = "" 
-                    current_parent = ""   
-                    
-                    if bonus_str: global_bonus = bonus_str
-                    else: global_bonus = "" 
-                    
-                    found_brand_header = True
-                    break
             
-            if not found_brand_header:
+            # Cek apakah baris ini dimulai dengan kunci Alias?
+            detected_alias = None
+            for alias, real_brand in BRAND_ALIASES.items():
+                if lower_key == alias or lower_key.startswith(alias + " "):
+                    detected_alias = real_brand
+                    # Simpan sisa teks header sebagai Konteks (Penting untuk "Diosys 100ml")
+                    # Misal: "Diosys 100ml" -> Brand: DIOSYS, Sisa: "100ml"
+                    context_suffix = lower_key.replace(alias, "").strip()
+                    break
+
+            # Jika tidak ketemu di alias, cek di DB langsung
+            if not detected_alias:
+                for brand in db_brands:
+                    if lower_key == brand or lower_key.startswith(brand + " "):
+                        detected_alias = brand
+                        context_suffix = lower_key.replace(brand, "").strip()
+                        break
+            
+            if detected_alias:
+                current_brand = detected_alias # Kunci ke Database Name (misal: AINIE)
+                current_category = context_suffix # Wariskan "100ml" ke anak-anaknya
+                current_parent = ""   
+                
+                if bonus_str: global_bonus = bonus_str
+                else: global_bonus = "" 
+                continue # Lanjut baris berikutnya
+            
+            else:
+                # Kategori Baru / Parent Baru
                 if "tambahan order" in lower_key:
-                    current_brand = "" # Reset brand kalau masuk tambahan order campuran
+                    current_brand = ""
                     current_category = ""
                     current_parent = ""
                     global_bonus = ""
                 else:
-                    # Kategori Baru
                     if len(lower_key) > 3: 
                         current_category = clean_keyword 
                         current_parent = clean_keyword
-            
             continue 
 
-        # D. Proses Item
+        # 5. PROSES ITEM
         items_to_process = []
         
-        # D.1 Cek "Semua Varian"
+        # Cek Semua Varian
         if "semua varian" in clean_keyword.lower():
             found_in_dict = False
-            # Gabungkan kategori + item untuk cek kamus
-            # Misal Context: "Jelly mask", Item: "semua varian" -> Key: "jelly mask"
             full_check_str = f"{current_category} {clean_keyword}".lower()
-
             for key, variants in AUTO_VARIANTS.items():
                 if key in full_check_str:
-                    # Hapus kata "semua varian"
                     base_name = clean_keyword.lower().replace("semua varian", "").strip()
-                    # Prefix pencarian: Brand + Kategori + Nama Item
                     prefix = f"{current_brand} {current_category} {base_name}".strip()
-                    
                     for var in variants:
                         items_to_process.append(f"{prefix} {var}")
                     found_in_dict = True
@@ -199,25 +237,17 @@ def parse_po_complex(text):
             if not found_in_dict:
                 items_to_process.append(f"{current_brand} {current_category} {clean_keyword}")
 
-        # D.2 Cek Koma (Splitter)
+        # Cek Koma (Splitter)
         elif "," in clean_keyword:
             parts = clean_keyword.split(',')
             first_part_words = parts[0].split()
-            if len(first_part_words) > 1:
-                local_prefix = " ".join(first_part_words[:-1]) 
-            else:
-                local_prefix = current_category 
+            local_prefix = " ".join(first_part_words[:-1]) if len(first_part_words) > 1 else current_category
             
-            # Item 1
-            full_query_1 = f"{current_brand} {current_category} {parts[0]}".strip()
-            items_to_process.append(full_query_1)
-            
-            # Item 2...n
+            items_to_process.append(f"{current_brand} {current_category} {parts[0]}".strip())
             for part in parts[1:]:
-                full_query_n = f"{current_brand} {local_prefix} {part.strip()}".strip()
-                items_to_process.append(full_query_n)
+                items_to_process.append(f"{current_brand} {local_prefix} {part.strip()}".strip())
                 
-        # D.3 Item Tunggal
+        # Item Tunggal
         else:
             final_query = ""
             is_short_variant = len(clean_keyword.split()) <= 2
@@ -225,19 +255,19 @@ def parse_po_complex(text):
             if current_parent and is_short_variant:
                 final_query = f"{current_parent} {clean_keyword}"
             else:
+                # Disini kuncinya: current_category berisi "100ml" jika header tadi "Diosys 100ml"
                 final_query = f"{current_brand} {current_category} {clean_keyword}"
             
             items_to_process.append(final_query.strip())
             
-        # E. Pencarian
+        # 6. EKSEKUSI PENCARIAN
         final_bonus = bonus_str if bonus_str else global_bonus
         
         for query in items_to_process:
-            # === PENTING: KITA KIRIM CURRENT_BRAND SEBAGAI FILTER ===
             sku_res, score, detected_merk = search_sku(query, brand_filter=current_brand)
             
             results.append({
-                "Brand Filter": current_brand if current_brand else "Auto",
+                "Brand Lock": current_brand if current_brand else "Auto",
                 "Input Original": query, 
                 "Hasil Pencarian SKU": sku_res,
                 "Qty": qty_str,
@@ -253,8 +283,8 @@ col1, col2 = st.columns([1, 2])
 
 with col1:
     st.subheader("📝 Input PO WhatsApp")
-    st.info("Tips: Pastikan baris judul brand (cth: 'SYB') dieja dengan benar sesuai database agar Brand Lock aktif.")
-    raw_text = st.text_area("Paste Chat di sini:", height=500, placeholder="ivana martubung\nsyb\nEye mask semua varian per lusin...")
+    st.info("Otomatis mendeteksi: Sekawan -> Ainie, Zaitun -> Olive Oil, Diosys 100ml vs 45ml.")
+    raw_text = st.text_area("Paste Chat di sini:", height=500, placeholder="Paste PO Anda...")
     process_btn = st.button("🚀 PROSES DATA", type="primary")
 
 with col2:
@@ -282,6 +312,5 @@ with col2:
                 use_container_width=True,
                 height=600
             )
-            
         else:
             st.warning("Tidak ada item yang terdeteksi.")
