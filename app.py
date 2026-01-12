@@ -61,11 +61,11 @@ def load_data():
     try:
         df = pd.read_csv(sheet_url)
         # Pastikan kolom Merk dan Nama Barang jadi String
-        df['Merk'] = df['Merk'].astype(str).str.strip()
+        df['Merek'] = df['Merek'].astype(str).str.strip()
         df['Nama Barang'] = df['Nama Barang'].astype(str).str.strip()
         
         # Buat kolom pencarian
-        df['Full_Text'] = df['Merk'] + ' ' + df['Nama Barang']
+        df['Full_Text'] = df['Merek'] + ' ' + df['Nama Barang']
         df['Clean_Text'] = df['Full_Text'].apply(lambda x: re.sub(r'[^a-z0-9\s]', ' ', str(x).lower()))
         return df
     except Exception as e:
@@ -102,7 +102,7 @@ def search_sku(query, brand_filter=None):
     # --- A. LOGIKA BRAND LOCK (WAJIB) ---
     if brand_filter:
         # Filter ketat: Score jadi 0 jika merk tidak sesuai
-        brand_mask = df['Merk'].str.lower().str.contains(brand_filter.lower(), regex=False, na=False).to_numpy()
+        brand_mask = df['Merek'].str.lower().str.contains(brand_filter.lower(), regex=False, na=False).to_numpy()
         final_scores = final_scores * brand_mask
 
     # --- B. LOGIKA HUKUMAN SATUAN (ML vs GR) ---
@@ -140,14 +140,14 @@ def search_sku(query, brand_filter=None):
     if best_score > 0.15:
         # Validasi ganda: Jika Brand Lock aktif, pastikan hasil memang dari brand itu
         if brand_filter:
-            result_brand = df.iloc[best_idx]['Merk']
+            result_brand = df.iloc[best_idx]['Merek']
             if brand_filter.lower() not in result_brand.lower():
                  return "⚠️ Brand Mismatch (Cek Database)", 0.0, ""
 
         # Format output: KODE | NAMA BARANG
         kode = str(df.iloc[best_idx]['Kode Barang']).replace("nan","-")
         nama = df.iloc[best_idx]['Nama Barang']
-        return f"{kode} | {nama}", best_score, df.iloc[best_idx]['Merk']
+        return f"{kode} | {nama}", best_score, df.iloc[best_idx]['Merek']
     else:
         return "❌ TIDAK DITEMUKAN", 0.0, ""
 
@@ -163,7 +163,7 @@ def parse_po_complex(text):
     global_bonus = ""       
     
     store_name = lines[0].strip() if lines else "Unknown Store"
-    db_brands = df['Merk'].str.lower().unique().tolist() if df is not None else []
+    db_brands = df['Merek'].str.lower().unique().tolist() if df is not None else []
     # Filter merk kosong/nan
     db_brands = [str(b) for b in db_brands if b != 'nan' and len(str(b)) > 1]
 
@@ -262,7 +262,7 @@ def parse_po_complex(text):
         final_bonus = bonus_str if bonus_str else global_bonus
         
         for query in items_to_process:
-            sku_res, score, detected_merk = search_sku(query, brand_filter=current_brand)
+            sku_res, score, detected_merek = search_sku(query, brand_filter=current_brand)
             
             results.append({
                 "Brand Lock": current_brand if current_brand else "-",
