@@ -8,8 +8,8 @@ import re
 # 0. KONFIGURASI HALAMAN
 # ==========================================
 st.set_page_config(page_title="AI Fakturis Pro", page_icon="🧬", layout="wide")
-st.title("🧬 AI Fakturis Pro (Final Strategy)")
-st.markdown("Fitur: **Banded Priority**, **Black Variant Tolerance**, **Smart Number**, & **Brand Lock**.")
+st.title("🧬 AI Fakturis Pro (Final Fix)")
+st.markdown("Fitur: **Surgical Fix Manjakani (Fixed)**, **Smart Number**, & **Banded Logic**.")
 
 # ==========================================
 # 1. KAMUS DATA & MAPPING
@@ -23,7 +23,8 @@ AUTO_VARIANTS = {
 }
 
 BRAND_ALIASES = {
-    "sekawan": "AINIE", "javinci": "JAVINCI", "thai": "THAI", 
+    "sekawan": "AINIE", "ainie": "AINIE", # Tambahan agar Ainie pasti uppercase
+    "javinci": "JAVINCI", "thai": "THAI", 
     "syb": "SYB", "diosys": "DIOSYS", "satto": "SATTO", 
     "vlagio": "VLAGIO", "honor": "HONOR", "hanasui": "HANASUI",
     "implora": "IMPLORA", "brasov": "BRASOV", "tata": "JAVINCI",
@@ -40,7 +41,10 @@ KEYWORD_REPLACEMENTS = {
     "d.brwon": "dark brown", "d.brown": "dark brown",
     "brwon": "brown", "coffe": "coffee", "cerry": "cherry", 
     "temulawak": "temulawak", "hand body": "lotion", "hb": "lotion",
-    "hairmask": "hair mask"
+    "hairmask": "hair mask",
+    # FIX KHUSUS: Manjakani sering salah volume
+    "manjakani 100ml": "manjakani 110ml",
+    "manjakani 100": "manjakani 110ml"
 }
 
 # Daftar Konflik (Anti-Clash)
@@ -51,8 +55,7 @@ CONFLICT_MAP = {
     "kemiri": ["olive", "zaitun"],
 }
 
-# KONFLIK WARNA (Hanya menghukum jika warna MUSUH muncul)
-# Kita hapus "putih" dari musuh "hitam" agar "Body White" tidak kena tembak.
+# KONFLIK VARIAN WARNA
 VARIANT_CONFLICTS = {
     "hitam": ["kuning", "ungu", "tomato", "cherry", "gold"],
     "black": ["yellow", "purple", "tomato", "cherry", "gold"],
@@ -133,16 +136,15 @@ def search_sku(query, brand_filter=None):
     if not query or len(query) < 2: return None, 0.0, "", ""
 
     query_clean = re.sub(r'[^a-z0-9\s]', ' ', query.lower())
-
-    # --- NO AUTO INJECTION ---
     search_query = query_clean
+
+    # Injeksi Sinonim Zaitun
     if "zaitun" in search_query and "olive" not in search_query:
         search_query += " olive oil" 
-    
-    # AI Cari Kandidat (Lebih banyak biar aman)
+
     query_vec = tfidf_vectorizer.transform([search_query])
     similarity_scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
-    top_indices = similarity_scores.argsort()[-30:][::-1]
+    top_indices = similarity_scores.argsort()[-25:][::-1]
     
     best_candidate = None
     best_score = -10.0
@@ -151,7 +153,7 @@ def search_sku(query, brand_filter=None):
     
     for idx in top_indices:
         current_score = similarity_scores[idx]
-        if current_score < 0.05: continue # Threshold rendah agar barang netral masuk
+        if current_score < 0.05: continue 
         
         row = df.iloc[idx]
         db_text = row['Clean_Text']
@@ -162,6 +164,7 @@ def search_sku(query, brand_filter=None):
             continue
         
         # 2. FILTER ANGKA (SMART VOLUME)
+        # Manjakani Special: Jika minta 110 (hasil replace), jangan dihukum jika DB ada 110
         valid_number = True
         for num in query_numbers:
             if int(num) > 20: 
@@ -171,7 +174,7 @@ def search_sku(query, brand_filter=None):
         if not valid_number:
             current_score -= 2.0 
 
-        # 3. ANTI-CLASH (Zaitun vs Kemiri)
+        # 3. ANTI-CLASH
         conflict_found = False
         for key, enemies in CONFLICT_MAP.items():
             if key in query_clean:
@@ -180,35 +183,23 @@ def search_sku(query, brand_filter=None):
                         conflict_found = True; break
         if conflict_found: continue
 
-        # 4. BANDED PRIORITY (RAJA)
-        # Jika user minta Banded, barang Banded dapat Boost Besar (+3.0)
-        # Barang non-banded dapat Hukuman (-2.0)
+        # 4. BANDED LOGIC
         for kw in ESSENTIAL_KEYWORDS:
-            if kw in query_clean:
-                if kw in db_text:
-                    current_score += 3.0 # Prioritas Utama
-                else:
-                    current_score -= 2.0 # Buang non-banded
-            elif kw not in query_clean and kw in db_text:
-                current_score -= 0.5 # Kalau user gak minta, jangan kasih banded
-
-        # 5. VARIANT ARBITRATOR (Warna)
+            if kw in query_clean and kw not in db_text:
+                current_score -= 2.0 
+            if kw not in query_clean and kw in db_text:
+                current_score -= 0.5 
+        
+        # 5. VARIANT ARBITRATOR
         for variant, enemies in VARIANT_CONFLICTS.items():
             if variant in query_clean:
-                # Cek Musuh (Misal minta Hitam, ada Kuning) -> HUKUM
                 for enemy in enemies:
                     if enemy in db_text:
-                        current_score -= 3.0
-                
-                # Cek Teman (Minta Hitam, ada Hitam) -> BOOST
+                        current_score -= 3.0 
                 if variant in db_text:
-                    current_score += 0.5
-                
-                # TOLERANSI NETRAL: 
-                # Jika user minta "Hitam" tapi DB tidak ada warna apapun (Netral)
-                # Maka jangan dihukum. Biarkan skornya apa adanya.
+                    current_score += 0.5 
         
-        # 6. COLLAGEN GUARD
+        # 6. COLLAGEN/ACNE GUARD
         sensitive_keywords = ["collagen", "acne"] 
         for kw in sensitive_keywords:
             if kw in db_text and kw not in query_clean:
@@ -253,6 +244,11 @@ def parse_po_complex(text):
 
         line_clean = re.sub(r'\([^)]*\)', '', line)
         
+        # REPLACEMENT LANGSUNG DI TEXT AWAL (Sebelum Split)
+        # Ini mengatasi masalah Manjakani 100ml
+        line_clean = line_clean.replace("manjakani 100ml", "manjakani 110ml")
+        line_clean = line_clean.replace("manjakani 100", "manjakani 110ml")
+
         words = line_clean.lower().split()
         replaced_words = []
         for w in words:
@@ -301,8 +297,9 @@ def parse_po_complex(text):
                 if len(lower_key) > 3: current_category = clean_keyword 
             continue 
 
-        # --- SURGICAL FIX UNTUK AINIE ---
-        if current_brand == "AINIE" and "manjakani" in clean_keyword and "100ml" in clean_keyword:
+        # SURGICAL FIX AINIE (BACKUP JIKA DI ATAS GAGAL)
+        # Gunakan .upper() agar tidak peduli huruf besar/kecil
+        if current_brand and current_brand.upper() == "AINIE" and "manjakani" in clean_keyword and "100ml" in clean_keyword:
             clean_keyword = clean_keyword.replace("100ml", "110ml")
 
         items_to_process = []
