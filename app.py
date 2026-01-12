@@ -7,9 +7,9 @@ import re
 # ==========================================
 # 0. KONFIGURASI HALAMAN
 # ==========================================
-st.set_page_config(page_title="AI Fakturis Pro", page_icon="🎯", layout="wide")
-st.title("🎯 AI Fakturis Pro (Precision)")
-st.markdown("Fitur: **Collagen Guard (Hukuman Berat)**, **Shape Logic (Bulat/Gepeng)**, & **No Auto-Zaitun**.")
+st.set_page_config(page_title="AI Fakturis Pro", page_icon="🧬", layout="wide")
+st.title("🧬 AI Fakturis Pro (Complete Fix)")
+st.markdown("Fitur: **Banded Logic Restored**, **Collagen Guard**, **Shape Logic**, & **Anti-Clash**.")
 
 # ==========================================
 # 1. KAMUS DATA & MAPPING
@@ -30,13 +30,10 @@ BRAND_ALIASES = {
     "body white": "JAVINCI"
 }
 
-# --- KEYWORD REPLACEMENTS (Hapus Zaitun -> Olive Oil) ---
 KEYWORD_REPLACEMENTS = {
     # 1. Terjemahan Bentuk Botol Tata
-    "bulat": "150ml", 
-    "botol bulat": "150ml",
-    "gepeng": "100ml",
-    "botol gepeng": "100ml",
+    "bulat": "150ml", "botol bulat": "150ml",
+    "gepeng": "100ml", "botol gepeng": "100ml",
     
     # 2. Typo & Singkatan
     "kemiri": "candlenut", 
@@ -47,13 +44,16 @@ KEYWORD_REPLACEMENTS = {
     "minyak": "oil", "hairmask": "hair mask"
 }
 
-# Daftar Konflik
+# Daftar Konflik (Anti-Clash)
 CONFLICT_MAP = {
     "olive": ["candlenut", "kemiri"],
     "zaitun": ["candlenut", "kemiri"],
     "candlenut": ["olive", "zaitun"],
     "kemiri": ["olive", "zaitun"],
 }
+
+# KEYWORD WAJIB (Fitur Banded yang Hilang sudah dikembalikan)
+ESSENTIAL_KEYWORDS = ["banded", "bonus", "free", "gratis"]
 
 # ==========================================
 # 2. LOAD DATA
@@ -117,7 +117,7 @@ if df is not None:
     tfidf_vectorizer, tfidf_matrix = train_model(df['Clean_Text'])
 
 # ==========================================
-# 4. ENGINE PENCARIAN (VARIANT GUARD EXTREME)
+# 4. ENGINE PENCARIAN (ALL LOGIC INCLUDED)
 # ==========================================
 def extract_numbers(text):
     return re.findall(r'\b\d+\b', text)
@@ -127,17 +127,16 @@ def search_sku(query, brand_filter=None):
 
     query_clean = re.sub(r'[^a-z0-9\s]', ' ', query.lower())
 
-    # --- NO AUTO INJECTION (Hapus Zaitun -> Olive Oil) ---
+    # --- NO AUTO INJECTION ---
     search_query = query_clean
-    # Kita biarkan query apa adanya agar Zaitun match Zaitun.
     
-    # AI Cari 20 Kandidat (Diperluas agar yang benar masuk radar)
+    # AI Cari Kandidat
     query_vec = tfidf_vectorizer.transform([search_query])
     similarity_scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
     top_indices = similarity_scores.argsort()[-20:][::-1]
     
     best_candidate = None
-    best_score = -10.0 # Start rendah
+    best_score = -10.0
     
     query_numbers = extract_numbers(query_clean)
     
@@ -161,7 +160,7 @@ def search_sku(query, brand_filter=None):
                     valid_number = False
                     break
         if not valid_number:
-            current_score -= 2.0 # Hukuman Mati
+            current_score -= 1.0 
 
         # 3. ANTI-CLASH
         conflict_found = False
@@ -174,19 +173,25 @@ def search_sku(query, brand_filter=None):
 
         # 4. SATUAN (ML vs GR)
         if "ml" in query_clean and "gr" in db_text and "ml" not in db_text: continue
-        
-        # 5. VARIANT GUARD (COLLAGEN PENALTY) - PERBAIKAN UTAMA
-        # Keyword sensitif yang sering bikin salah
-        sensitive_keywords = ["collagen", "booster", "serum", "acne", "brightening"]
-        
-        for kw in sensitive_keywords:
-            # Jika di Database ada "Collagen", TAPI di User TIDAK ada "Collagen"
-            if kw in db_text and kw not in query_clean:
-                current_score -= 5.0 # HUKUMAN MATI (-5.0). Dijamin kalah.
+
+        # 5. BANDED / PROMO LOGIC (INI YANG KEMARIN HILANG)
+        for kw in ESSENTIAL_KEYWORDS:
+            # Jika user minta Banded, DB harus ada Banded
+            if kw in query_clean and kw not in db_text:
+                current_score -= 2.0 # Hukuman Berat
             
-            # Bonus jika cocok (User ketik Collagen, DB ada Collagen)
+            # Jika user TIDAK minta Banded, tapi DB ada Banded
+            # Kita kasih hukuman ringan agar barang normal lebih diprioritaskan
+            if kw not in query_clean and kw in db_text:
+                current_score -= 0.5 
+        
+        # 6. VARIANT GUARD (COLLAGEN PENALTY)
+        sensitive_keywords = ["collagen", "booster", "serum", "acne", "brightening"]
+        for kw in sensitive_keywords:
+            if kw in db_text and kw not in query_clean:
+                current_score -= 0.6 # Hukuman
             if kw in db_text and kw in query_clean:
-                current_score += 0.5
+                current_score += 0.5 # Boost
 
         if current_score > best_score:
             best_score = current_score
