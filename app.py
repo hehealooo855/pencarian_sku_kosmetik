@@ -8,8 +8,8 @@ import re
 # 0. KONFIGURASI HALAMAN
 # ==========================================
 st.set_page_config(page_title="AI Fakturis Ultimate", page_icon="💎", layout="wide")
-st.title("💎 AI Fakturis Ultimate (Zero Mistake Mode)")
-st.markdown("Fitur: **Hard Unit Filter**, **Aggressive Regex Cleaning**, & **Strict Brand Locking**.")
+st.title("💎 AI Fakturis Ultimate (Merek Fixed)")
+st.markdown("Fitur: **Support Kolom 'Merek'**, **Hard Unit Filter**, & **Strict Brand Locking**.")
 
 # ==========================================
 # 1. KAMUS DATA & MAPPING
@@ -28,7 +28,8 @@ BRAND_ALIASES = {
     "sekawan": "AINIE", "javinci": "JAVINCI", "thai": "THAI", 
     "syb": "SYB", "diosys": "DIOSYS", "satto": "SATTO", 
     "vlagio": "VLAGIO", "honor": "HONOR", "hanasui": "HANASUI",
-    "implora": "IMPLORA", "brasov": "BRASOV", "felinz": "FELINZ"
+    "implora": "IMPLORA", "brasov": "BRASOV", "felinz": "FELINZ",
+    "y2000": "Y2000", "esene": "ESENE"
 }
 
 # C. KEYWORD REPLACEMENTS (Kamus Typo & Singkatan)
@@ -42,16 +43,60 @@ KEYWORD_REPLACEMENTS = {
 }
 
 # ==========================================
-# 2. LOAD DATA (CANGGIH)
+# 2. LOAD DATA (COLUMN FIX: MEREK)
 # ==========================================
 @st.cache_data(ttl=600)
 def load_data():
-    # Link Google Sheet (Pastikan format=csv)
+    # Link Google Sheet
     sheet_url = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRqUOC7mKPH8FYtrmXUcFBa3zYQfh2sdC5sPFUFafInQG4wE-6bcBI3OEPLKCVuMdm2rZYgXzkBCcnS/pub?gid=0&single=true&output=csv'
     
     try:
-        df = pd.read_csv(sheet_url)
-        # Pastikan kolom string
+        # Baca raw data dulu untuk mencari header yang benar
+        df_raw = pd.read_csv(sheet_url, header=None)
+        
+        header_idx = -1
+        # Cari baris yang mengandung kata "kode barang" dan "nama barang"
+        for i, row in df_raw.iterrows():
+            row_str = row.astype(str).str.lower().tolist()
+            if any("kode barang" in x for x in row_str):
+                header_idx = i
+                break
+        
+        if header_idx == -1:
+            st.error("Header tidak ditemukan. Pastikan ada baris dengan tulisan 'Kode Barang'.")
+            return None
+
+        # Load data dari baris header yang benar
+        df = pd.read_csv(sheet_url, header=header_idx)
+        
+        # Bersihkan nama kolom (strip spasi)
+        df.columns = df.columns.str.strip()
+        
+        # --- LOGIKA PEMETAAN KOLOM CERDAS ---
+        col_map = {}
+        for col in df.columns:
+            c_low = col.lower()
+            if "kode" in c_low and "barang" in c_low: col_map['kode'] = col
+            if "nama" in c_low and "barang" in c_low: col_map['nama'] = col
+            # Cek "merek" (sesuai request Anda) atau "merk" (jaga-jaga)
+            if "merek" in c_low or "merk" in c_low: col_map['merk'] = col
+
+        # Validasi kolom wajib
+        if 'kode' not in col_map or 'nama' not in col_map or 'merk' not in col_map:
+            st.error(f"Kolom wajib tidak lengkap. Ditemukan: {list(col_map.keys())}. Butuh: Kode Barang, Nama Barang, Merek.")
+            return None
+
+        # Rename kolom ke standar internal program ('Merk', 'Nama Barang', 'Kode Barang')
+        df = df.rename(columns={
+            col_map['kode']: 'Kode Barang',
+            col_map['nama']: 'Nama Barang',
+            col_map['merk']: 'Merk' # Kita standarkan jadi 'Merk' di dalam kodingan
+        })
+        
+        # Ambil kolom penting dan bersihkan
+        df = df[['Kode Barang', 'Nama Barang', 'Merk']].copy()
+        
+        # Pastikan tipe data string
         df['Merk'] = df['Merk'].astype(str).str.strip().replace('nan', '')
         df['Nama Barang'] = df['Nama Barang'].astype(str).str.strip()
         df['Kode Barang'] = df['Kode Barang'].astype(str).str.strip().replace('nan', '-')
@@ -59,7 +104,9 @@ def load_data():
         # Buat kolom pencarian bersih
         df['Full_Text'] = df['Merk'] + ' ' + df['Nama Barang']
         df['Clean_Text'] = df['Full_Text'].apply(lambda x: re.sub(r'[^a-z0-9\s]', ' ', str(x).lower()))
+        
         return df
+
     except Exception as e:
         st.error(f"Gagal memuat database: {e}")
         return None
@@ -72,7 +119,6 @@ df = load_data()
 @st.cache_resource
 def train_model(data):
     if data is None or data.empty: return None, None
-    # Ngram 1-5 untuk menangkap kata super pendek (misal: "Ash", "Red")
     vectorizer = TfidfVectorizer(analyzer='word', token_pattern=r'\w{2,}', ngram_range=(1, 3)) 
     matrix = vectorizer.fit_transform(data)
     return vectorizer, matrix
@@ -92,35 +138,28 @@ def search_sku(query, brand_filter=None):
     
     final_scores = similarity_scores.copy()
 
-    # --- 1. BRAND LOCK (KACAMATA KUDA) ---
+    # --- 1. BRAND LOCK ---
     if brand_filter:
-        # Buat Mask: True jika merk sesuai, False jika tidak
-        # Gunakan regex=False agar karakter spesial tidak merusak
         brand_mask = df['Merk'].str.lower().str.contains(brand_filter.lower(), regex=False, na=False).to_numpy()
-        # Matikan total skor brand lain
         final_scores = final_scores * brand_mask
 
-    # --- 2. HARD UNIT FILTER (HUKUMAN MATI) ---
-    # Jika user minta ML, haram hukumnya dikasih GR (Sabun Padat). Dan sebaliknya.
+    # --- 2. HARD UNIT FILTER (ML vs GR) ---
     if re.search(r'\b\d+\s*ml\b', query_clean): # User minta ML
         for idx, row in df.iterrows():
-            if re.search(r'\b\d+\s*gr\b', row['Clean_Text']): # Database item GR
-                final_scores[idx] = 0.0 # MATIKAN
+            if re.search(r'\b\d+\s*gr\b', row['Clean_Text']): # DB item GR
+                final_scores[idx] = 0.0 
 
     if re.search(r'\b\d+\s*gr\b', query_clean): # User minta GR
         for idx, row in df.iterrows():
-            if re.search(r'\b\d+\s*ml\b', row['Clean_Text']): # Database item ML
-                final_scores[idx] = 0.0 # MATIKAN
+            if re.search(r'\b\d+\s*ml\b', row['Clean_Text']): # DB item ML
+                final_scores[idx] = 0.0 
 
     # --- 3. CONTEXT BOOSTING ---
-    # Boost Ukuran Diosys
     if "100ml" in query_clean:
         for idx, row in df.iterrows():
             if "100ml" in row['Clean_Text']: final_scores[idx] += 0.5
-            elif "45ml" in row['Clean_Text']: final_scores[idx] -= 1.0 # Hukuman diperberat
+            elif "45ml" in row['Clean_Text']: final_scores[idx] -= 1.0 
 
-    # Boost Warna/Varian Pendek
-    # Jika query pendek (misal "Red Wine"), kita cari exact match di nama barang
     if len(query.split()) <= 3:
         for idx, row in df.iterrows():
             if query_clean in row['Clean_Text']:
@@ -129,14 +168,11 @@ def search_sku(query, brand_filter=None):
     best_idx = final_scores.argmax()
     best_score = final_scores[best_idx]
     
-    # Threshold Validasi
     min_threshold = 0.15
-    if brand_filter: min_threshold = 0.05 # Kalau brand sudah kekunci, turunkan threshold biar varian aneh tetap ketemu
+    if brand_filter: min_threshold = 0.05 
 
     if best_score > min_threshold:
         row = df.iloc[best_idx]
-        
-        # Validasi Terakhir: Jika Brand Lock aktif, pastikan Brand Output mengandung Filter
         if brand_filter and brand_filter.lower() not in row['Merk'].lower():
              return "⚠️ Brand Mismatch", 0.0, "", "-"
 
@@ -157,7 +193,6 @@ def parse_po_complex(text):
     
     store_name = lines[0].strip() if lines else "Unknown Store"
     
-    # Daftar Brand DB untuk deteksi
     db_brands = df['Merk'].str.lower().unique().tolist() if df is not None else []
     db_brands = [str(b) for b in db_brands if len(str(b)) > 1]
 
@@ -165,12 +200,10 @@ def parse_po_complex(text):
         line = line.strip()
         if not line or line == "-": continue
         
-        # A. CLEANING RAW (Hapus dalam kurung DULUAN)
-        # Hapus (24+3), (12+1), (10+5%) SEBELUM diproses agar tidak mengganggu deteksi Brand
-        # Regex: Hapus apapun di dalam kurung (...)
+        # CLEANING RAW (Hapus kurung)
         line_no_brackets = re.sub(r'\([^)]*\)', '', line)
         
-        # B. GANTI KEYWORD (Sinonim)
+        # SINONIM
         words = line_no_brackets.lower().split()
         replaced_words = []
         for w in words:
@@ -178,19 +211,17 @@ def parse_po_complex(text):
             replaced_words.append(KEYWORD_REPLACEMENTS.get(clean_w, w))
         line_processed = " ".join(replaced_words)
 
-        # C. EKSTRAKSI ANGKA (Dari line asli yg masih ada kurungnya utk bonus)
+        # EKSTRAKSI ANGKA
         qty_match = re.search(r'(per\s*)?(\d+)?\s*(pcs|pc|lsn|lusin|box|kotak|btl|botol|pack|kotak)', line, re.IGNORECASE)
         qty_str = qty_match.group(0) if qty_match else ""
         
         bonus_match = re.search(r'\(?(\d+\s*\+\s*\d+)\)?(?!%)', line)
         bonus_str = bonus_match.group(1) if bonus_match else ""
         
-        # Keyword Bersih untuk AI
         clean_keyword = line_processed.replace(qty_str.lower(), "").strip()
-        # Hapus karakter non-alphanumeric sisa
         clean_keyword = re.sub(r'[^\w\s,]', '', clean_keyword).strip()
         
-        # D. LOGIKA HEADER vs ITEM
+        # LOGIKA HEADER vs ITEM
         is_item = bool(qty_match)
         
         if not is_item:
@@ -198,7 +229,7 @@ def parse_po_complex(text):
             detected_alias = None
             context_suffix = ""
             
-            # Cek Alias Brand
+            # Cek Alias
             for alias, real_brand in BRAND_ALIASES.items():
                 if lower_key == alias or lower_key.startswith(alias + " "):
                     detected_alias = real_brand
@@ -208,21 +239,17 @@ def parse_po_complex(text):
             # Cek DB Langsung
             if not detected_alias:
                 for brand in db_brands:
-                    # Match exact word untuk menghindari salah deteksi (misal "The" kena "Thai")
-                    # Pakai regex boundary \b
                     if re.search(r'\b' + re.escape(brand) + r'\b', lower_key):
                         detected_alias = brand
-                        # Hapus nama brand dari keyword untuk jadi kategori (misal: "Diosys 100ml" -> "100ml")
                         context_suffix = lower_key.replace(brand, "").strip()
                         break
             
             if detected_alias:
                 current_brand = detected_alias 
-                current_category = context_suffix # Mewariskan "100ml"
+                current_category = context_suffix 
                 global_bonus = bonus_str if bonus_str else "" 
                 continue 
             else:
-                # Judul Kategori non-brand
                 if "tambahan order" in lower_key:
                     current_brand = ""
                     current_category = ""
@@ -231,10 +258,9 @@ def parse_po_complex(text):
                     current_category = clean_keyword 
             continue 
 
-        # E. PROSES ITEM
+        # PROSES ITEM
         items_to_process = []
         
-        # Logic Semua Varian
         if "semua varian" in clean_keyword.lower():
             found = False
             full_chk = f"{current_category} {clean_keyword}".lower()
@@ -246,7 +272,6 @@ def parse_po_complex(text):
                     found = True; break
             if not found: items_to_process.append(f"{current_brand} {current_category} {clean_keyword}")
 
-        # Logic Split Koma
         elif "," in clean_keyword:
             parts = clean_keyword.split(',')
             local_prefix = " ".join(parts[0].split()[:-1]) if len(parts[0].split()) > 1 else current_category
@@ -256,7 +281,7 @@ def parse_po_complex(text):
             final_query = f"{current_brand} {current_category} {clean_keyword}"
             items_to_process.append(final_query.strip())
             
-        # F. EKSEKUSI SEARCH
+        # EKSEKUSI SEARCH
         final_bonus = bonus_str if bonus_str else global_bonus
         
         for query in items_to_process:
