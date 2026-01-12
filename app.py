@@ -1,203 +1,311 @@
+import streamlit as st
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 import re
-from thefuzz import process, fuzz
 
 # ==========================================
-# 1. DATABASE PRODUK (SOURCE OF TRUTH)
+# 0. KONFIGURASI HALAMAN
 # ==========================================
-# Database ini harus lengkap agar pencocokan akurat
-PRODUCT_DATABASE = {
-    # --- THAI ---
-    "TPA00001": "THAI PAPAYA LIGHT SOAP 130GR",
-    "TPA00223": "THAI GOAT MILK & OLIVE OIL SOAP 100GR",
-    "TH-OIL-ZAI": "THAI MINYAK ZAITUN (OLIVE OIL) 125ML",
-    "TH-OIL-KEM": "THAI MINYAK KEMIRI 125ML",
-    
-    # --- JAVINCI ---
-    "1200005": "BODY WHITE AHA GLUTA-HYA BRIGHT BODY TONE-UP SERUM 200ML (HITAM)",
-    "1108.01": "BODY WHITE AHA GLUTA HYA UVBRIGHT BODY TONE-UP SERUM 100ML",
-    
-    # --- DIOSYS ---
-    "DIO-100-NB": "DIOSYS COLOR 100ML NATURAL BLACK",
-    "DIO-100-DB": "DIOSYS COLOR 100ML DARK BROWN",
-    "DIO-100-BR": "DIOSYS COLOR 100ML BROWN",
-    "DIO-100-CF": "DIOSYS COLOR 100ML COFFEE",
-    "DIO-100-RW": "DIOSYS COLOR 100ML RED WINE",
-    "DIO-100-GB": "DIOSYS COLOR 100ML GOLDEN BLONDE",
-    "DIO-100-CH": "DIOSYS COLOR 100ML CHERRY",
-    "DIO-100-LB": "DIOSYS COLOR 100ML LIGHT BLONDE",
-    "DIO-100-BL": "DIOSYS COLOR 100ML BLEACHING",
-    
-    # --- ARTIST INC (Penyebab Error sebelumnya) ---
-    "AIR8-ET": "ARTIST INC.REJUVEN-8 BACK TO BALANCE ESSENCE TONER 100ML"
+st.set_page_config(page_title="AI Fakturis Enterprise", page_icon="🏢", layout="wide")
+st.title("🏢 AI Fakturis Enterprise (Fixed Logic)")
+st.markdown("Perbaikan: **Akurasi Satuan (ML vs GR)**, **Deteksi Header Diosys**, & **Mapping Warna**.")
+
+# ==========================================
+# 1. KAMUS & LOGIKA PINTAR
+# ==========================================
+
+AUTO_VARIANTS = {
+    "eye mask": ["Gold", "Osmanthus", "Seaweed", "Black Pearl"], 
+    "lip mask": ["Peach", "Strawberry", "Blueberry"],
+    "sheet mask": ["Aloe", "Pomegranate", "Honey", "Olive", "Blueberry"],
+    "powder mask": ["Greentea", "Lavender", "Peppermint", "Strawberry"],
 }
 
-# Mapping untuk pencarian
-PRODUCT_NAMES = list(PRODUCT_DATABASE.values())
-PRODUCT_MAP = {v: k for k, v in PRODUCT_DATABASE.items()} 
+# Mapping Nama Sales -> Nama Database (BRAND LOCK)
+BRAND_ALIASES = {
+    "sekawan": "AINIE",  
+    "javinci": "JAVINCI",
+    "thai": "THAI",
+    "syb": "SYB",
+    "diosys": "DIOSYS",
+    "satto": "SATTO",
+    "vlagio": "VLAGIO"
+}
+
+# Kamus Typo & Singkatan
+KEYWORD_REPLACEMENTS = {
+    "zaitun": "olive oil",         
+    "kemiri": "candlenut",         
+    "n.black": "natural black",    # Penting buat Diosys
+    "n black": "natural black",
+    "d.brwon": "dark brown",       # Typo umum
+    "d.brown": "dark brown",
+    "brwon": "brown",
+    "coffe": "coffee",
+    "cerry": "cherry",
+    "shunsine": "sunshine",
+    "temulawak": "temulawak",
+    "hand body": "lotion",
+    "hb": "lotion"
+}
 
 # ==========================================
-# 2. LOGIKA PARSING CERDAS (CONTEXT AWARE)
+# 2. LOAD DATA
 # ==========================================
-
-class SmartPOParser:
-    def __init__(self, db_names, db_map):
-        self.db_names = db_names
-        self.db_map = db_map
-
-    def clean_text(self, text):
-        """Membersihkan simbol bullet point dan spasi."""
-        text = re.sub(r'^[-*•\s]+', '', text) 
-        return text.strip()
-
-    def extract_quantity(self, text):
-        """
-        Mendeteksi apakah baris ini memiliki Quantity (berarti ini ITEM).
-        Mengembalikan: (Nama Bersih, Quantity String, Bonus String)
-        """
-        # Regex mencari angka diikuti pcs/btl/kotak, dll
-        qty_regex = r'(\d+)\s*(pcs|pc|btl|box|kotak|lsn)'
-        qty_match = re.search(qty_regex, text, re.IGNORECASE)
+@st.cache_data(ttl=600)
+def load_data():
+    # Link Google Sheet Anda
+    sheet_url = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRqUOC7mKPH8FYtrmXUcFBa3zYQfh2sdC5sPFUFafInQG4wE-6bcBI3OEPLKCVuMdm2rZYgXzkBCcnS/pub?gid=0&single=true&output=csv'
+    
+    try:
+        df = pd.read_csv(sheet_url)
+        # Pastikan kolom Merk dan Nama Barang jadi String
+        df['Merk'] = df['Merk'].astype(str).str.strip()
+        df['Nama Barang'] = df['Nama Barang'].astype(str).str.strip()
         
-        # Regex mencari bonus dalam kurung (misal: 12+1 atau 24+3)
-        bonus_match = re.search(r'\((.*?)\)', text)
+        # Buat kolom pencarian
+        df['Full_Text'] = df['Merk'] + ' ' + df['Nama Barang']
+        df['Clean_Text'] = df['Full_Text'].apply(lambda x: re.sub(r'[^a-z0-9\s]', ' ', str(x).lower()))
+        return df
+    except Exception as e:
+        st.error(f"Gagal memuat database: {e}")
+        return None
+
+df = load_data()
+
+# ==========================================
+# 3. TRAIN AI
+# ==========================================
+@st.cache_resource
+def train_model(data):
+    if data is None or data.empty: return None, None
+    vectorizer = TfidfVectorizer(analyzer='char_wb', ngram_range=(2, 5))
+    matrix = vectorizer.fit_transform(data)
+    return vectorizer, matrix
+
+if df is not None:
+    tfidf_vectorizer, tfidf_matrix = train_model(df['Clean_Text'])
+
+# ==========================================
+# 4. ENGINE PENCARIAN (DENGAN LOGIKA BARU)
+# ==========================================
+def search_sku(query, brand_filter=None):
+    if not query or len(query) < 2: return None, 0.0, ""
+
+    query_clean = re.sub(r'[^a-z0-9\s]', ' ', query.lower())
+    query_vec = tfidf_vectorizer.transform([query_clean])
+    similarity_scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
+    
+    final_scores = similarity_scores.copy()
+
+    # --- A. LOGIKA BRAND LOCK (WAJIB) ---
+    if brand_filter:
+        # Filter ketat: Score jadi 0 jika merk tidak sesuai
+        brand_mask = df['Merk'].str.lower().str.contains(brand_filter.lower(), regex=False, na=False).to_numpy()
+        final_scores = final_scores * brand_mask
+
+    # --- B. LOGIKA HUKUMAN SATUAN (ML vs GR) ---
+    # Ini memperbaiki kasus Thai Zaitun 125ml vs Sabun 100gr
+    if "ml" in query_clean:
+        # Jika user minta ML, hukum barang yang mengandung GR (sabun padat/cream)
+        for idx, row in df.iterrows():
+            if re.search(r'\b\d+gr\b', row['Clean_Text']): # Ada angka+gr (misal 100gr)
+                final_scores[idx] -= 0.6 # Hukuman berat
+
+    if "gr" in query_clean:
+        # Jika user minta GR, hukum barang yang mengandung ML (cairan)
+        for idx, row in df.iterrows():
+            if re.search(r'\b\d+ml\b', row['Clean_Text']): 
+                final_scores[idx] -= 0.6
+
+    # --- C. LOGIKA BOOSTING SPESIFIK ---
+    # Diosys 100ml
+    if "100ml" in query_clean:
+        for idx, row in df.iterrows():
+            if "100ml" in row['Clean_Text']: final_scores[idx] += 0.5
+            elif "45ml" in row['Clean_Text']: final_scores[idx] -= 0.5
+    
+    # Zaitun / Olive Oil
+    if "olive oil" in query_clean:
+        for idx, row in df.iterrows():
+            if "olive oil" in row['Clean_Text']: final_scores[idx] += 0.3
+            # Bonus extra kalau ada 125ml
+            if "125ml" in query_clean and "125ml" in row['Clean_Text']: final_scores[idx] += 0.5
+
+    best_idx = final_scores.argmax()
+    best_score = final_scores[best_idx]
+    
+    # Ambang batas dinaikkan sedikit agar tidak asal tebak
+    if best_score > 0.15:
+        # Validasi ganda: Jika Brand Lock aktif, pastikan hasil memang dari brand itu
+        if brand_filter:
+            result_brand = df.iloc[best_idx]['Merk']
+            if brand_filter.lower() not in result_brand.lower():
+                 return "⚠️ Brand Mismatch (Cek Database)", 0.0, ""
+
+        # Format output: KODE | NAMA BARANG
+        kode = str(df.iloc[best_idx]['Kode Barang']).replace("nan","-")
+        nama = df.iloc[best_idx]['Nama Barang']
+        return f"{kode} | {nama}", best_score, df.iloc[best_idx]['Merk']
+    else:
+        return "❌ TIDAK DITEMUKAN", 0.0, ""
+
+# ==========================================
+# 5. PARSER PO (LOGIKA HEADER DIPERBAIKI)
+# ==========================================
+def parse_po_complex(text):
+    lines = text.split('\n')
+    results = []
+    
+    current_brand = ""      
+    current_category = ""   
+    global_bonus = ""       
+    
+    store_name = lines[0].strip() if lines else "Unknown Store"
+    db_brands = df['Merk'].str.lower().unique().tolist() if df is not None else []
+    # Filter merk kosong/nan
+    db_brands = [str(b) for b in db_brands if b != 'nan' and len(str(b)) > 1]
+
+    for line in lines[1:]: 
+        line = line.strip()
+        if not line or line == "-": continue
         
-        qty_str = qty_match.group(0) if qty_match else None
+        # 1. Ganti Keyword (Sinonim)
+        words = line.lower().split()
+        replaced_words = []
+        for w in words:
+            clean_w = w.strip(",.-")
+            replaced_words.append(KEYWORD_REPLACEMENTS.get(clean_w, w))
+        line_processed = " ".join(replaced_words)
+
+        # 2. Ekstraksi Angka
+        qty_match = re.search(r'(per\s*)?(\d+)?\s*(pcs|pc|lsn|lusin|box|kotak|btl|botol|pack|kotak)', line_processed, re.IGNORECASE)
+        qty_str = qty_match.group(0) if qty_match else ""
+        
+        bonus_match = re.search(r'\(?(\d+\s*\+\s*\d+)\)?(?!%)', line_processed)
         bonus_str = bonus_match.group(1) if bonus_match else ""
         
-        # Bersihkan nama produk dari qty dan bonus untuk pencarian bersih
-        clean_name = text
-        if qty_str: clean_name = clean_name.replace(qty_str, "")
-        if bonus_match: clean_name = clean_name.replace(bonus_match.group(0), "")
+        # Bersihkan teks (PENTING: Hapus qty/bonus agar deteksi brand akurat)
+        clean_line = line_processed
+        if qty_str: clean_line = clean_line.replace(qty_str, "")
+        if bonus_str: clean_line = clean_line.replace(bonus_match.group(0), "")
         
-        return clean_name.strip(), qty_str, bonus_str
-
-    def find_best_match(self, query):
-        """Mencari produk menggunakan Fuzzy Matching"""
-        # Token Set Ratio sangat bagus untuk kata yang diacak atau ada kata tambahan
-        # Cutoff 70 berarti minimal kemiripan 70%
-        match, score = process.extractOne(query, self.db_names, scorer=fuzz.token_set_ratio)
+        # Hapus simbol aneh sisa regex
+        clean_keyword = re.sub(r'[^\w\s]', '', clean_line).strip() 
         
-        if score >= 70: 
-            return match, score
-        return None, score
-
-    def process_po_text(self, raw_text):
-        lines = raw_text.strip().split('\n')
-        results = []
+        # 3. DETEKSI HEADER (BRAND/KATEGORI)
+        is_item = bool(qty_match)
         
-        current_header = "" # INI KUNCINYA: Menyimpan konteks (misal: "Diosys 100ml")
-        outlet_name = ""
-        
-        for i, line in enumerate(lines):
-            line = line.strip()
-            if not line: continue
+        if not is_item:
+            lower_key = clean_keyword.lower()
+            detected_alias = None
+            context_suffix = ""
             
-            # Baris 1 dianggap nama toko
-            if i == 0:
-                outlet_name = line
-                continue
-            
-            # Abaikan baris tagihan/komentar
-            if line.startswith("#"): continue
+            # Cek Alias
+            for alias, real_brand in BRAND_ALIASES.items():
+                # Pakai startswith dengan spasi agar "diosys 100ml" kena, tapi "diosy" tidak
+                if lower_key == alias or lower_key.startswith(alias + " "):
+                    detected_alias = real_brand
+                    context_suffix = lower_key.replace(alias, "").strip()
+                    break
 
-            # 1. Analisa Baris: Apakah ini Item atau Header?
-            item_text, qty, bonus = self.extract_quantity(line)
-            item_text = self.clean_text(item_text)
+            # Cek DB Langsung
+            if not detected_alias:
+                for brand in db_brands:
+                    if lower_key == brand or lower_key.startswith(brand + " "):
+                        detected_alias = brand
+                        context_suffix = lower_key.replace(brand, "").strip()
+                        break
             
-            # Jika TIDAK ada quantity, kita anggap ini Header/Kategori baru
-            if not qty:
-                # Cek apakah ini header murni atau header dengan info bonus (24+3)
-                current_header = item_text
-                # Bersihkan info dalam kurung dari header (misal Diosys 100ml (24+3) -> Diosys 100ml)
-                current_header = re.sub(r'\((.*?)\)', '', current_header).strip()
+            if detected_alias:
+                current_brand = detected_alias 
+                current_category = context_suffix 
+                global_bonus = bonus_str if bonus_str else "" 
                 continue 
-            
-            # 2. Bangun Query Pencarian
-            # Gabungkan Header + Item. 
-            # Contoh: Header="Diosys 100ml", Item="N.black" -> Query="Diosys 100ml N.black"
-            
-            # Normalisasi singkatan umum sales sebelum matching (Fix Typo)
-            replacements = {
-                "n.black": "natural black", "n black": "natural black",
-                "d.brwon": "dark brown", "d.brown": "dark brown",
-                "brwon": "brown", "coffe": "coffee", "cerry": "cherry",
-                "zaitun": "minyak zaitun", "kemiri": "minyak kemiri"
-            }
-            
-            lower_item = item_text.lower()
-            for k, v in replacements.items():
-                if k in lower_item:
-                    lower_item = lower_item.replace(k, v)
-            
-            # Gabungkan Header + Item yang sudah diperbaiki typonya
-            full_query = f"{current_header} {lower_item}"
-            
-            # 3. Cari di Database
-            product_name, score = self.find_best_match(full_query)
-            
-            # Format tampilan Qty + Bonus untuk Output
-            qty_display = qty
-            if bonus: qty_display += f" ({bonus})"
-            
-            if product_name:
-                sku = self.db_map[product_name]
-                results.append({
-                    "sku": sku,
-                    "product": product_name,
-                    "qty": qty_display,
-                    "score": score
-                })
             else:
-                # Fallback jika tidak ketemu
-                results.append({
-                    "sku": "UNKNOWN",
-                    "product": f"?? CEK MANUAL: {full_query} ??",
-                    "qty": qty_display,
-                    "score": 0
-                })
+                # Kategori Baru (bukan brand)
+                if "tambahan order" in lower_key:
+                    current_brand = ""
+                    current_category = ""
+                    global_bonus = ""
+                elif len(lower_key) > 3: 
+                    current_category = clean_keyword 
+            continue 
 
-        return outlet_name, results
+        # 4. PROSES ITEM
+        items_to_process = []
+        
+        if "semua varian" in clean_keyword.lower():
+            # (Logika semua varian sama seperti sebelumnya)
+            found = False
+            full_chk = f"{current_category} {clean_keyword}".lower()
+            for key, vars in AUTO_VARIANTS.items():
+                if key in full_chk:
+                    base = clean_keyword.lower().replace("semua varian", "").strip()
+                    prefix = f"{current_brand} {current_category} {base}".strip()
+                    for v in vars: items_to_process.append(f"{prefix} {v}")
+                    found = True; break
+            if not found: items_to_process.append(f"{current_brand} {current_category} {clean_keyword}")
+
+        elif "," in clean_keyword:
+            parts = clean_keyword.split(',')
+            local_prefix = " ".join(parts[0].split()[:-1]) if len(parts[0].split()) > 1 else current_category
+            items_to_process.append(f"{current_brand} {current_category} {parts[0]}")
+            for p in parts[1:]: items_to_process.append(f"{current_brand} {local_prefix} {p}")
+        else:
+            # PENTING: Gabungkan Brand + Kategori (100ml) + Nama Item
+            final_query = f"{current_brand} {current_category} {clean_keyword}"
+            items_to_process.append(final_query.strip())
+            
+        # 5. Cari SKU
+        final_bonus = bonus_str if bonus_str else global_bonus
+        
+        for query in items_to_process:
+            sku_res, score, detected_merk = search_sku(query, brand_filter=current_brand)
+            
+            results.append({
+                "Brand Lock": current_brand if current_brand else "-",
+                "Hasil Pencarian SKU": sku_res,
+                "Qty": qty_str,
+                "Bonus": final_bonus,
+                "Input": query,
+                "Akurasi": score
+            })
+            
+    return store_name, results
 
 # ==========================================
-# 3. CONTOH INPUT DARI ANDA
+# 6. UI UTAMA
 # ==========================================
+col1, col2 = st.columns([1, 2])
 
-input_po_sales = """
-Tiga kenza dolok masihul
-#tagihan bayar
+with col1:
+    st.subheader("📝 Input PO WhatsApp")
+    raw_text = st.text_area("Paste Chat di sini:", height=500, placeholder="Paste PO Anda...")
+    process_btn = st.button("🚀 PROSES DATA", type="primary")
 
-THAI
--Jinzu papaya 130gr 12pcs (12+1)
--zaitun 125ml 12pcs (12+1)
--kemiri 125ml 12pcs (12+1)
-
-Javinci
-Aha gluta tone up banded hitam 200ml 12pcs (12+1)
-Aha body suncreen 100ml banded 12pcs (12+1)
-
-Diosys 100ml (24+3)
-N.black 12pcs
-D.brwon 6pcs
-Brwon 6pcs
-Coffe 8pcs
-Red wine 4pcs
-Golden blonde 4pcs
-Cerry 4pcs
-Light blonde 4pcs
-"""
-
-
-
-# --- JALANKAN ---
-if __name__ == "__main__":
-    parser = SmartPOParser(PRODUCT_NAMES, PRODUCT_MAP)
-    outlet, parsed_items = parser.process_po_text(input_po_sales)
-
-    # Tampilkan Hasil Output di Terminal
-    print(f"PO: {outlet}")
-    print("=" * 100)
-    print(f"{'SKU':<12} | {'NAMA PRODUK (DATABASE)':<60} | {'QTY'}")
-    print("-" * 100)
-
-    for item in parsed_items:
-        print(f"{item['sku']:<12} | {item['product']:<60} | {item['qty']}")
+with col2:
+    st.subheader("📊 Hasil Analisa Faktur")
+    
+    if process_btn and raw_text:
+        store_name, data = parse_po_complex(raw_text)
+        
+        st.success(f"🏪 **Nama Toko:** {store_name}")
+        
+        if data:
+            df_res = pd.DataFrame(data)
+            
+            # Format tampilan agar lebih mudah dibaca
+            st.data_editor(
+                df_res[["Hasil Pencarian SKU", "Qty", "Bonus", "Brand Lock", "Akurasi"]],
+                column_config={
+                    "Akurasi": st.column_config.ProgressColumn("Confidence", format="%.2f", min_value=0, max_value=1),
+                    "Hasil Pencarian SKU": st.column_config.TextColumn("KODE | NAMA BARANG", width="large")
+                },
+                hide_index=True,
+                use_container_width=True,
+                height=600
+            )
+        else:
+            st.warning("Tidak ada item yang terdeteksi.")
