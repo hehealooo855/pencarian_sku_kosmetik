@@ -1,7 +1,4 @@
 streamlit
 pandas
-plotly
-xlsxwriter
-pytz
-thefuzz
-python-Levenshtein
+scikit-learn
+openpyxl
