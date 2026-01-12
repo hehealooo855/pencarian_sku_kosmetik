@@ -8,8 +8,8 @@ import re
 # 0. KONFIGURASI HALAMAN
 # ==========================================
 st.set_page_config(page_title="AI Fakturis Pro", page_icon="🧬", layout="wide")
-st.title("🧬 AI Fakturis Pro (Complete Fix)")
-st.markdown("Fitur: **Banded Logic Restored**, **Collagen Guard**, **Shape Logic**, & **Anti-Clash**.")
+st.title("🧬 AI Fakturis Pro (Final Correction)")
+st.markdown("Fitur: **Smart Number Reader**, **Bahasa Indonesia Native (No Oil translation)**, & **Brand Lock**.")
 
 # ==========================================
 # 1. KAMUS DATA & MAPPING
@@ -30,18 +30,20 @@ BRAND_ALIASES = {
     "body white": "JAVINCI"
 }
 
+# --- PERBAIKAN DI SINI: HAPUS TRANSLASI YANG MERUSAK ---
 KEYWORD_REPLACEMENTS = {
     # 1. Terjemahan Bentuk Botol Tata
     "bulat": "150ml", "botol bulat": "150ml",
     "gepeng": "100ml", "botol gepeng": "100ml",
     
     # 2. Typo & Singkatan
-    "kemiri": "candlenut", 
+    "kemiri": "candlenut", # Candlenut biasanya aman karena jarang dipakai
     "n.black": "natural black", "n black": "natural black", 
     "d.brwon": "dark brown", "d.brown": "dark brown",
     "brwon": "brown", "coffe": "coffee", "cerry": "cherry", 
     "temulawak": "temulawak", "hand body": "lotion", "hb": "lotion",
-    "minyak": "oil", "hairmask": "hair mask"
+    "hairmask": "hair mask"
+    # SAYA HAPUS "minyak": "oil" AGAR SESUAI DATABASE INDONESIA
 }
 
 # Daftar Konflik (Anti-Clash)
@@ -52,7 +54,7 @@ CONFLICT_MAP = {
     "kemiri": ["olive", "zaitun"],
 }
 
-# KEYWORD WAJIB (Fitur Banded yang Hilang sudah dikembalikan)
+# Keyword Wajib
 ESSENTIAL_KEYWORDS = ["banded", "bonus", "free", "gratis"]
 
 # ==========================================
@@ -61,7 +63,6 @@ ESSENTIAL_KEYWORDS = ["banded", "bonus", "free", "gratis"]
 @st.cache_data(ttl=600)
 def load_data():
     sheet_url = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRqUOC7mKPH8FYtrmXUcFBa3zYQfh2sdC5sPFUFafInQG4wE-6bcBI3OEPLKCVuMdm2rZYgXzkBCcnS/pub?gid=0&single=true&output=csv'
-    
     try:
         df_raw = pd.read_csv(sheet_url, header=None)
         header_idx = -1
@@ -96,6 +97,7 @@ def load_data():
         df['Kode Barang'] = df['Kode Barang'].astype(str).str.strip().replace('nan', '-')
         
         df['Full_Text'] = df['Merk'] + ' ' + df['Nama Barang']
+        # Pembersihan teks dasar
         df['Clean_Text'] = df['Full_Text'].apply(lambda x: re.sub(r'[^a-z0-9\s]', ' ', str(x).lower()))
         return df
 
@@ -109,7 +111,8 @@ df = load_data()
 @st.cache_resource
 def train_model(data):
     if data is None or data.empty: return None, None
-    vectorizer = TfidfVectorizer(analyzer='word', token_pattern=r'\w{2,}', ngram_range=(1, 3)) 
+    # Token pattern diperbaiki agar bisa membaca kata pendek
+    vectorizer = TfidfVectorizer(analyzer='word', token_pattern=r'(?u)\b\w+\b', ngram_range=(1, 3)) 
     matrix = vectorizer.fit_transform(data)
     return vectorizer, matrix
 
@@ -117,18 +120,21 @@ if df is not None:
     tfidf_vectorizer, tfidf_matrix = train_model(df['Clean_Text'])
 
 # ==========================================
-# 4. ENGINE PENCARIAN (ALL LOGIC INCLUDED)
+# 4. ENGINE PENCARIAN
 # ==========================================
-def extract_numbers(text):
-    return re.findall(r'\b\d+\b', text)
+def extract_numbers_robust(text):
+    # Regex ini bisa mengambil "100" dari "100ml"
+    return re.findall(r'(\d+)', text)
 
 def search_sku(query, brand_filter=None):
     if not query or len(query) < 2: return None, 0.0, "", ""
 
     query_clean = re.sub(r'[^a-z0-9\s]', ' ', query.lower())
 
-    # --- NO AUTO INJECTION ---
+    # --- SYNONYM INJECTION ---
     search_query = query_clean
+    if "zaitun" in search_query and "olive" not in search_query:
+        search_query += " olive oil" 
     
     # AI Cari Kandidat
     query_vec = tfidf_vectorizer.transform([search_query])
@@ -138,7 +144,9 @@ def search_sku(query, brand_filter=None):
     best_candidate = None
     best_score = -10.0
     
-    query_numbers = extract_numbers(query_clean)
+    # Ambil angka dari query ASLI (sebelum spasi dibersihkan regex)
+    # Agar "100ml" terbaca angka 100-nya
+    query_numbers = extract_numbers_robust(query.lower())
     
     for idx in top_indices:
         current_score = similarity_scores[idx]
@@ -152,17 +160,19 @@ def search_sku(query, brand_filter=None):
         if brand_filter and brand_filter.lower() not in db_brand:
             continue
         
-        # 2. FILTER ANGKA (VOLUME ENFORCER)
+        # 2. FILTER ANGKA (SMART VOLUME)
+        # Jika user minta "100", di database harus ada angka "100" (baik terpisah atau nempel)
         valid_number = True
         for num in query_numbers:
             if int(num) > 20: 
-                if num not in db_text:
+                # Cek keberadaan angka di teks database
+                if num not in db_text: 
                     valid_number = False
                     break
         if not valid_number:
-            current_score -= 1.0 
+            current_score -= 2.0 # Hukuman Mati (Salah Volume)
 
-        # 3. ANTI-CLASH
+        # 3. ANTI-CLASH (Zaitun vs Kemiri)
         conflict_found = False
         for key, enemies in CONFLICT_MAP.items():
             if key in query_clean:
@@ -171,33 +181,27 @@ def search_sku(query, brand_filter=None):
                         conflict_found = True; break
         if conflict_found: continue
 
-        # 4. SATUAN (ML vs GR)
-        if "ml" in query_clean and "gr" in db_text and "ml" not in db_text: continue
-
-        # 5. BANDED / PROMO LOGIC (INI YANG KEMARIN HILANG)
+        # 4. BANDED LOGIC
         for kw in ESSENTIAL_KEYWORDS:
-            # Jika user minta Banded, DB harus ada Banded
             if kw in query_clean and kw not in db_text:
-                current_score -= 2.0 # Hukuman Berat
-            
-            # Jika user TIDAK minta Banded, tapi DB ada Banded
-            # Kita kasih hukuman ringan agar barang normal lebih diprioritaskan
+                current_score -= 2.0
             if kw not in query_clean and kw in db_text:
                 current_score -= 0.5 
         
-        # 6. VARIANT GUARD (COLLAGEN PENALTY)
+        # 5. VARIANT GUARD (COLLAGEN PENALTY)
         sensitive_keywords = ["collagen", "booster", "serum", "acne", "brightening"]
         for kw in sensitive_keywords:
             if kw in db_text and kw not in query_clean:
-                current_score -= 0.6 # Hukuman
+                current_score -= 1.0 # Hukuman diperberat (-1.0)
             if kw in db_text and kw in query_clean:
-                current_score += 0.5 # Boost
+                current_score += 0.5 
 
         if current_score > best_score:
             best_score = current_score
             best_candidate = row
 
-    if best_candidate is not None and best_score > 0.1:
+    # Turunkan threshold sedikit agar barang yang kena penalti ringan masih bisa muncul
+    if best_candidate is not None and best_score > 0.05:
         return best_candidate['Nama Barang'], best_score, best_candidate['Merk'], best_candidate['Kode Barang']
     else:
         return "❌ TIDAK DITEMUKAN", 0.0, "", "-"
