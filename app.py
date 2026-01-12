@@ -7,12 +7,12 @@ import re
 # ==========================================
 # 0. KONFIGURASI HALAMAN
 # ==========================================
-st.set_page_config(page_title="AI Fakturis Pro", page_icon="⚖️", layout="wide")
-st.title("⚖️ AI Fakturis Pro (Smart Synonym)")
-st.markdown("Fitur: **Synonym Injection (Zaitun + Olive Oil)**, **Shape Translator**, & **Strict Filter**.")
+st.set_page_config(page_title="AI Fakturis Pro", page_icon="🧬", layout="wide")
+st.title("🧬 AI Fakturis Pro (Variant Guard)")
+st.markdown("Fitur: **Variant Guard (No Collagen if not asked)**, **Shape Translator**, & **Anti-Clash**.")
 
 # ==========================================
-# 1. KAMUS DATA
+# 1. KAMUS DATA & MAPPING
 # ==========================================
 
 AUTO_VARIANTS = {
@@ -29,14 +29,15 @@ BRAND_ALIASES = {
     "implora": "IMPLORA", "brasov": "BRASOV", "tata": "JAVINCI"
 }
 
-# --- PERBAIKAN DI SINI ---
-# Kita HAPUS "zaitun": "olive oil" agar tidak diganti paksa
+# --- BAGIAN PENTING: MAPPING BENTUK KE UKURAN ---
 KEYWORD_REPLACEMENTS = {
-    # 1. Terjemahan Bentuk (Tetap Dipertahankan)
-    "bulat": "150ml", "botol bulat": "150ml",
-    "gepeng": "100ml", "botol gepeng": "100ml",
+    # 1. Terjemahan Bentuk Botol Tata
+    "bulat": "150ml", 
+    "botol bulat": "150ml",
+    "gepeng": "100ml",
+    "botol gepeng": "100ml",
     
-    # 2. Typo & Singkatan
+    # 2. Typo & Singkatan Lain
     "kemiri": "candlenut", 
     "n.black": "natural black", "n black": "natural black", 
     "d.brwon": "dark brown", "d.brown": "dark brown",
@@ -45,7 +46,7 @@ KEYWORD_REPLACEMENTS = {
     "minyak": "oil", "hairmask": "hair mask"
 }
 
-# Musuh Bebuyutan (Anti-Clash)
+# Daftar Konflik (Barang yang sering tertukar)
 CONFLICT_MAP = {
     "olive": ["candlenut", "kemiri"],
     "zaitun": ["candlenut", "kemiri"],
@@ -115,7 +116,7 @@ if df is not None:
     tfidf_vectorizer, tfidf_matrix = train_model(df['Clean_Text'])
 
 # ==========================================
-# 4. ENGINE PENCARIAN (SYNONYM INJECTION)
+# 4. ENGINE PENCARIAN (VARIANT GUARD)
 # ==========================================
 def extract_numbers(text):
     return re.findall(r'\b\d+\b', text)
@@ -125,14 +126,12 @@ def search_sku(query, brand_filter=None):
 
     query_clean = re.sub(r'[^a-z0-9\s]', ' ', query.lower())
 
-    # --- SYNONYM INJECTION (SUNTIK SINONIM) ---
-    # Jika ada kata "zaitun", tambahkan "olive oil" ke pencarian (tapi jangan hapus zaitun)
-    # Agar bisa match dua-duanya.
+    # --- SYNONYM INJECTION ---
     search_query = query_clean
     if "zaitun" in search_query and "olive" not in search_query:
-        search_query += " olive oil" # Expand pencarian
+        search_query += " olive oil" 
     
-    # AI Cari Kandidat
+    # AI Cari 15 Kandidat
     query_vec = tfidf_vectorizer.transform([search_query])
     similarity_scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
     top_indices = similarity_scores.argsort()[-15:][::-1]
@@ -140,9 +139,7 @@ def search_sku(query, brand_filter=None):
     best_candidate = None
     best_score = -1.0
     
-    # Ambil angka ASLI dari input user (sebelum di-inject sinonim)
-    # Agar validasi angka tetap akurat (misal user minta 150ml)
-    query_numbers = extract_numbers(query_clean) 
+    query_numbers = extract_numbers(query_clean)
     
     for idx in top_indices:
         current_score = similarity_scores[idx]
@@ -157,7 +154,6 @@ def search_sku(query, brand_filter=None):
             continue
         
         # 2. FILTER ANGKA (VOLUME ENFORCER)
-        # Jika user minta "150", database harus ada "150".
         valid_number = True
         for num in query_numbers:
             if int(num) > 20: 
@@ -165,12 +161,12 @@ def search_sku(query, brand_filter=None):
                     valid_number = False
                     break
         if not valid_number:
-            current_score -= 1.0 # Hukuman Mati
+            current_score -= 1.0 
 
-        # 3. ANTI-CLASH (Zaitun vs Kemiri)
+        # 3. ANTI-CLASH
         conflict_found = False
         for key, enemies in CONFLICT_MAP.items():
-            if key in query_clean: # Pakai query asli user
+            if key in query_clean:
                 for enemy in enemies:
                     if enemy in db_text:
                         conflict_found = True; break
@@ -178,6 +174,15 @@ def search_sku(query, brand_filter=None):
 
         # 4. SATUAN (ML vs GR)
         if "ml" in query_clean and "gr" in db_text and "ml" not in db_text: continue
+        
+        # 5. VARIANT GUARD (NO COLLAGEN IF NOT ASKED)
+        # Ini Solusi untuk masalah Anda
+        sensitive_keywords = ["collagen", "booster", "serum", "acne"]
+        
+        for kw in sensitive_keywords:
+            # Jika Database ada "Collagen" TAPI User TIDAK ketik "Collagen"
+            if kw in db_text and kw not in query_clean:
+                current_score -= 0.6 # Hukuman cukup berat agar varian polos yang menang
             
         if current_score > best_score:
             best_score = current_score
@@ -201,7 +206,6 @@ def parse_po_complex(text):
     
     store_name = lines[0].strip() if lines else "Unknown Store"
     
-    # Scan Footer Bonus
     for line in reversed(lines):
         if re.fullmatch(r'\s*\d+\s*\+\s*\d+\s*', line):
             footer_bonus = line.strip()
@@ -215,10 +219,8 @@ def parse_po_complex(text):
         if not line or line == "-": continue
         if line == footer_bonus: continue 
 
-        # CLEANING
         line_clean = re.sub(r'\([^)]*\)', '', line)
         
-        # KEYWORD REPLACEMENT (Tanpa Zaitun -> Olive Oil)
         words = line_clean.lower().split()
         replaced_words = []
         for w in words:
@@ -243,7 +245,6 @@ def parse_po_complex(text):
         clean_keyword = line_processed.replace(qty_str.lower(), "").strip()
         clean_keyword = re.sub(r'[^\w\s]', '', clean_keyword).strip()
         
-        # HEADER DETECTION
         is_item = bool(qty_match)
         if not is_item:
             lower_key = clean_keyword.lower()
@@ -268,7 +269,6 @@ def parse_po_complex(text):
                 if len(lower_key) > 3: current_category = clean_keyword 
             continue 
 
-        # PROSES ITEM
         items_to_process = []
         if "semua varian" in clean_keyword.lower():
             found = False
@@ -291,7 +291,6 @@ def parse_po_complex(text):
             final_query = f"{current_brand} {current_category} {clean_keyword}"
             items_to_process.append(final_query.strip())
             
-        # EKSEKUSI
         final_bonus = line_bonus if line_bonus else footer_bonus
         
         for query in items_to_process:
