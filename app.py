@@ -7,9 +7,9 @@ import re
 # ==========================================
 # 0. KONFIGURASI HALAMAN
 # ==========================================
-st.set_page_config(page_title="AI Fakturis Pro", page_icon="🧬", layout="wide")
-st.title("🧬 AI Fakturis Pro (Variant Guard)")
-st.markdown("Fitur: **Variant Conflict Check (Hitam vs Kuning)**, **Must-Have Keywords (Banded)**, & **Shape Logic**.")
+st.set_page_config(page_title="AI Fakturis Pro", page_icon="🎯", layout="wide")
+st.title("🎯 AI Fakturis Pro (Precision)")
+st.markdown("Fitur: **Collagen Guard (Hukuman Berat)**, **Shape Logic (Bulat/Gepeng)**, & **No Auto-Zaitun**.")
 
 # ==========================================
 # 1. KAMUS DATA & MAPPING
@@ -27,19 +27,18 @@ BRAND_ALIASES = {
     "syb": "SYB", "diosys": "DIOSYS", "satto": "SATTO", 
     "vlagio": "VLAGIO", "honor": "HONOR", "hanasui": "HANASUI",
     "implora": "IMPLORA", "brasov": "BRASOV", "tata": "JAVINCI",
-    "body white": "JAVINCI" # Body White biasanya masuk Javinci
+    "body white": "JAVINCI"
 }
 
-# --- MAPPING BENTUK & TYPO ---
+# --- KEYWORD REPLACEMENTS (Hapus Zaitun -> Olive Oil) ---
 KEYWORD_REPLACEMENTS = {
-    # Bentuk Botol Tata
+    # 1. Terjemahan Bentuk Botol Tata
     "bulat": "150ml", 
     "botol bulat": "150ml",
-    # Gepeng kita tambah 100ml tapi tetap simpan kata gepengnya
-    "gepeng": "gepeng 100ml",
-    "botol gepeng": "gepeng 100ml",
+    "gepeng": "100ml",
+    "botol gepeng": "100ml",
     
-    # Typo & Singkatan
+    # 2. Typo & Singkatan
     "kemiri": "candlenut", 
     "n.black": "natural black", "n black": "natural black", 
     "d.brwon": "dark brown", "d.brown": "dark brown",
@@ -48,26 +47,13 @@ KEYWORD_REPLACEMENTS = {
     "minyak": "oil", "hairmask": "hair mask"
 }
 
-# Daftar Konflik (Barang yang sering tertukar)
-# Format: "Jika ada kata KEY, maka MUSUH tidak boleh ada"
+# Daftar Konflik
 CONFLICT_MAP = {
     "olive": ["candlenut", "kemiri"],
     "zaitun": ["candlenut", "kemiri"],
     "candlenut": ["olive", "zaitun"],
     "kemiri": ["olive", "zaitun"],
 }
-
-# Daftar Konflik Varian (Warna/Jenis)
-# Format: "Jika KEY ada di Query, maka Value TIDAK BOLEH ada di Database"
-VARIANT_CONFLICTS = {
-    "hitam": ["kuning", "putih", "ungu", "tomato", "cherry", "uvbright"],
-    "black": ["yellow", "white", "purple", "tomato", "cherry", "uvbright"],
-    "kuning": ["hitam", "black", "ungu", "tomato", "cherry"],
-    "putih": ["hitam", "black", "kuning", "tomato", "cherry"],
-}
-
-# Keyword Wajib (Jika user ketik ini, database HARUS punya)
-ESSENTIAL_KEYWORDS = ["banded", "bonus"]
 
 # ==========================================
 # 2. LOAD DATA
@@ -131,7 +117,7 @@ if df is not None:
     tfidf_vectorizer, tfidf_matrix = train_model(df['Clean_Text'])
 
 # ==========================================
-# 4. ENGINE PENCARIAN (VARIANT ARBITRATOR)
+# 4. ENGINE PENCARIAN (VARIANT GUARD EXTREME)
 # ==========================================
 def extract_numbers(text):
     return re.findall(r'\b\d+\b', text)
@@ -141,18 +127,17 @@ def search_sku(query, brand_filter=None):
 
     query_clean = re.sub(r'[^a-z0-9\s]', ' ', query.lower())
 
-    # --- SYNONYM INJECTION ---
+    # --- NO AUTO INJECTION (Hapus Zaitun -> Olive Oil) ---
     search_query = query_clean
-    if "zaitun" in search_query and "olive" not in search_query:
-        search_query += " olive oil" 
+    # Kita biarkan query apa adanya agar Zaitun match Zaitun.
     
-    # AI Cari 15 Kandidat
+    # AI Cari 20 Kandidat (Diperluas agar yang benar masuk radar)
     query_vec = tfidf_vectorizer.transform([search_query])
     similarity_scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
-    top_indices = similarity_scores.argsort()[-15:][::-1]
+    top_indices = similarity_scores.argsort()[-20:][::-1]
     
     best_candidate = None
-    best_score = -1.0
+    best_score = -10.0 # Start rendah
     
     query_numbers = extract_numbers(query_clean)
     
@@ -168,7 +153,7 @@ def search_sku(query, brand_filter=None):
         if brand_filter and brand_filter.lower() not in db_brand:
             continue
         
-        # 2. FILTER ANGKA (VOLUME)
+        # 2. FILTER ANGKA (VOLUME ENFORCER)
         valid_number = True
         for num in query_numbers:
             if int(num) > 20: 
@@ -176,9 +161,9 @@ def search_sku(query, brand_filter=None):
                     valid_number = False
                     break
         if not valid_number:
-            current_score -= 1.0 # Hukuman Mati
+            current_score -= 2.0 # Hukuman Mati
 
-        # 3. ANTI-CLASH (Zaitun vs Kemiri)
+        # 3. ANTI-CLASH
         conflict_found = False
         for key, enemies in CONFLICT_MAP.items():
             if key in query_clean:
@@ -187,27 +172,22 @@ def search_sku(query, brand_filter=None):
                         conflict_found = True; break
         if conflict_found: continue
 
-        # 4. ESSENTIAL KEYWORDS (Banded)
-        # Jika user minta Banded, database HARUS ada Banded
-        for kw in ESSENTIAL_KEYWORDS:
-            if kw in query_clean:
-                if kw not in db_text:
-                    current_score -= 0.8 # Hukuman Berat
-        
-        # 5. VARIANT CONFLICT (Hitam vs Kuning)
-        # Ini Solusi untuk AHA GLUTA HITAM
-        for variant, enemies in VARIANT_CONFLICTS.items():
-            if variant in query_clean: # User minta "Hitam"
-                for enemy in enemies:
-                    if enemy in db_text: # Database ada "Kuning"
-                        current_score -= 1.0 # TOLAK!
-                # Jika database ada "Hitam" juga, kasih poin plus
-                if variant in db_text:
-                    current_score += 0.2
-        
-        # 6. SATUAN (ML vs GR)
+        # 4. SATUAN (ML vs GR)
         if "ml" in query_clean and "gr" in db_text and "ml" not in db_text: continue
+        
+        # 5. VARIANT GUARD (COLLAGEN PENALTY) - PERBAIKAN UTAMA
+        # Keyword sensitif yang sering bikin salah
+        sensitive_keywords = ["collagen", "booster", "serum", "acne", "brightening"]
+        
+        for kw in sensitive_keywords:
+            # Jika di Database ada "Collagen", TAPI di User TIDAK ada "Collagen"
+            if kw in db_text and kw not in query_clean:
+                current_score -= 5.0 # HUKUMAN MATI (-5.0). Dijamin kalah.
             
+            # Bonus jika cocok (User ketik Collagen, DB ada Collagen)
+            if kw in db_text and kw in query_clean:
+                current_score += 0.5
+
         if current_score > best_score:
             best_score = current_score
             best_candidate = row
@@ -230,7 +210,6 @@ def parse_po_complex(text):
     
     store_name = lines[0].strip() if lines else "Unknown Store"
     
-    # Scan Footer Bonus
     for line in reversed(lines):
         if re.fullmatch(r'\s*\d+\s*\+\s*\d+\s*', line):
             footer_bonus = line.strip()
@@ -259,7 +238,7 @@ def parse_po_complex(text):
         
         # HANDLE FRASA BENTUK
         line_processed = line_processed.replace("botol bulat", "150ml").replace("bulat", "150ml")
-        line_processed = line_processed.replace("botol gepeng", "gepeng 100ml").replace("gepeng", "gepeng 100ml")
+        line_processed = line_processed.replace("botol gepeng", "100ml").replace("gepeng", "100ml")
 
         qty_match = re.search(r'(per\s*)?(\d+)?\s*(pcs|pc|lsn|lusin|box|kotak|btl|botol|pack|kotak)', line, re.IGNORECASE)
         qty_str = qty_match.group(0) if qty_match else ""
