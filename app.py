@@ -7,12 +7,12 @@ import re
 # ==========================================
 # 0. KONFIGURASI HALAMAN
 # ==========================================
-st.set_page_config(page_title="AI Fakturis Pro", page_icon="🧬", layout="wide")
-st.title("🧬 AI Fakturis Pro (Shape & Volume Logic)")
-st.markdown("Fitur Baru: **Penerjemah Bentuk (Bulat=150ml, Gepeng=100ml)** & **Logic Tata Zaitun**.")
+st.set_page_config(page_title="AI Fakturis Pro", page_icon="⚖️", layout="wide")
+st.title("⚖️ AI Fakturis Pro (Smart Synonym)")
+st.markdown("Fitur: **Synonym Injection (Zaitun + Olive Oil)**, **Shape Translator**, & **Strict Filter**.")
 
 # ==========================================
-# 1. KAMUS DATA & MAPPING
+# 1. KAMUS DATA
 # ==========================================
 
 AUTO_VARIANTS = {
@@ -29,16 +29,15 @@ BRAND_ALIASES = {
     "implora": "IMPLORA", "brasov": "BRASOV", "tata": "JAVINCI"
 }
 
-# --- BAGIAN PENTING: MAPPING BENTUK KE UKURAN ---
+# --- PERBAIKAN DI SINI ---
+# Kita HAPUS "zaitun": "olive oil" agar tidak diganti paksa
 KEYWORD_REPLACEMENTS = {
-    # 1. Terjemahan Bentuk Botol Tata
-    "bulat": "150ml", 
-    "botol bulat": "150ml",
-    "gepeng": "100ml",
-    "botol gepeng": "100ml",
+    # 1. Terjemahan Bentuk (Tetap Dipertahankan)
+    "bulat": "150ml", "botol bulat": "150ml",
+    "gepeng": "100ml", "botol gepeng": "100ml",
     
-    # 2. Typo & Singkatan Lain
-    "zaitun": "olive oil", "kemiri": "candlenut", 
+    # 2. Typo & Singkatan
+    "kemiri": "candlenut", 
     "n.black": "natural black", "n black": "natural black", 
     "d.brwon": "dark brown", "d.brown": "dark brown",
     "brwon": "brown", "coffe": "coffee", "cerry": "cherry", 
@@ -46,7 +45,7 @@ KEYWORD_REPLACEMENTS = {
     "minyak": "oil", "hairmask": "hair mask"
 }
 
-# Daftar Konflik (Barang yang sering tertukar)
+# Musuh Bebuyutan (Anti-Clash)
 CONFLICT_MAP = {
     "olive": ["candlenut", "kemiri"],
     "zaitun": ["candlenut", "kemiri"],
@@ -116,7 +115,7 @@ if df is not None:
     tfidf_vectorizer, tfidf_matrix = train_model(df['Clean_Text'])
 
 # ==========================================
-# 4. ENGINE PENCARIAN (VOLUME ENFORCER)
+# 4. ENGINE PENCARIAN (SYNONYM INJECTION)
 # ==========================================
 def extract_numbers(text):
     return re.findall(r'\b\d+\b', text)
@@ -125,16 +124,25 @@ def search_sku(query, brand_filter=None):
     if not query or len(query) < 2: return None, 0.0, "", ""
 
     query_clean = re.sub(r'[^a-z0-9\s]', ' ', query.lower())
+
+    # --- SYNONYM INJECTION (SUNTIK SINONIM) ---
+    # Jika ada kata "zaitun", tambahkan "olive oil" ke pencarian (tapi jangan hapus zaitun)
+    # Agar bisa match dua-duanya.
+    search_query = query_clean
+    if "zaitun" in search_query and "olive" not in search_query:
+        search_query += " olive oil" # Expand pencarian
     
-    # AI Cari 15 Kandidat
-    query_vec = tfidf_vectorizer.transform([query_clean])
+    # AI Cari Kandidat
+    query_vec = tfidf_vectorizer.transform([search_query])
     similarity_scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
     top_indices = similarity_scores.argsort()[-15:][::-1]
     
     best_candidate = None
     best_score = -1.0
     
-    query_numbers = extract_numbers(query_clean)
+    # Ambil angka ASLI dari input user (sebelum di-inject sinonim)
+    # Agar validasi angka tetap akurat (misal user minta 150ml)
+    query_numbers = extract_numbers(query_clean) 
     
     for idx in top_indices:
         current_score = similarity_scores[idx]
@@ -149,21 +157,20 @@ def search_sku(query, brand_filter=None):
             continue
         
         # 2. FILTER ANGKA (VOLUME ENFORCER)
-        # Jika query hasil terjemahan ada "150", database WAJIB punya "150"
-        # Ini memastikan "Bulat" (150ml) tidak lari ke "Gepeng" (100ml)
+        # Jika user minta "150", database harus ada "150".
         valid_number = True
         for num in query_numbers:
-            if int(num) > 20: # Fokus ke angka besar (Volume)
+            if int(num) > 20: 
                 if num not in db_text:
                     valid_number = False
                     break
         if not valid_number:
-            current_score -= 1.0 # Hukuman Mati (Agar 100ml tidak terpilih saat minta 150ml)
+            current_score -= 1.0 # Hukuman Mati
 
         # 3. ANTI-CLASH (Zaitun vs Kemiri)
         conflict_found = False
         for key, enemies in CONFLICT_MAP.items():
-            if key in query_clean:
+            if key in query_clean: # Pakai query asli user
                 for enemy in enemies:
                     if enemy in db_text:
                         conflict_found = True; break
@@ -182,7 +189,7 @@ def search_sku(query, brand_filter=None):
         return "❌ TIDAK DITEMUKAN", 0.0, "", "-"
 
 # ==========================================
-# 5. PARSER PO (FOOTER BONUS & TRANSLATOR)
+# 5. PARSER PO
 # ==========================================
 def parse_po_complex(text):
     lines = text.split('\n')
@@ -194,7 +201,7 @@ def parse_po_complex(text):
     
     store_name = lines[0].strip() if lines else "Unknown Store"
     
-    # Scan Footer Bonus (12+1)
+    # Scan Footer Bonus
     for line in reversed(lines):
         if re.fullmatch(r'\s*\d+\s*\+\s*\d+\s*', line):
             footer_bonus = line.strip()
@@ -211,12 +218,11 @@ def parse_po_complex(text):
         # CLEANING
         line_clean = re.sub(r'\([^)]*\)', '', line)
         
-        # KEYWORD REPLACEMENT (Termasuk Penerjemah Bentuk)
+        # KEYWORD REPLACEMENT (Tanpa Zaitun -> Olive Oil)
         words = line_clean.lower().split()
         replaced_words = []
         for w in words:
             clean_w = w.strip(",.-")
-            # Cek kamus pengganti
             if clean_w in KEYWORD_REPLACEMENTS:
                 replaced_words.append(KEYWORD_REPLACEMENTS[clean_w])
             else:
@@ -224,8 +230,7 @@ def parse_po_complex(text):
         
         line_processed = " ".join(replaced_words)
         
-        # PENTING: Handle frasa "botol bulat" atau "botol gepeng" yang mungkin terpisah
-        # Karena split() memisahkan kata, kita replace lagi manual untuk frasa
+        # HANDLE FRASA BENTUK
         line_processed = line_processed.replace("botol bulat", "150ml").replace("bulat", "150ml")
         line_processed = line_processed.replace("botol gepeng", "100ml").replace("gepeng", "100ml")
 
@@ -296,7 +301,7 @@ def parse_po_complex(text):
                 "Nama Barang": nama,
                 "Qty": qty_str,
                 "Bonus": final_bonus,
-                "Input": query, # Menampilkan query hasil terjemahan (misal: ... 150ml)
+                "Input": query,
                 "Akurasi": score
             })
             
