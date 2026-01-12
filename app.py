@@ -8,8 +8,8 @@ import re
 # 0. KONFIGURASI HALAMAN
 # ==========================================
 st.set_page_config(page_title="AI Fakturis Pro", page_icon="🧬", layout="wide")
-st.title("🧬 AI Fakturis Pro (Final Gold)")
-st.markdown("Fitur: **Surgical Fix (Ainie 110ml)**, **Neutral Variant Tolerance**, & **Banded Logic**.")
+st.title("🧬 AI Fakturis Pro (Final Strategy)")
+st.markdown("Fitur: **Banded Priority**, **Black Variant Tolerance**, **Smart Number**, & **Brand Lock**.")
 
 # ==========================================
 # 1. KAMUS DATA & MAPPING
@@ -30,13 +30,12 @@ BRAND_ALIASES = {
     "body white": "JAVINCI"
 }
 
-# KEYWORD REPLACEMENT GLOBAL
 KEYWORD_REPLACEMENTS = {
-    # Bentuk Botol Tata
+    # 1. Terjemahan Bentuk Botol Tata
     "bulat": "150ml", "botol bulat": "150ml",
     "gepeng": "100ml", "botol gepeng": "100ml",
     
-    # Typo
+    # 2. Typo & Singkatan
     "n.black": "natural black", "n black": "natural black", 
     "d.brwon": "dark brown", "d.brown": "dark brown",
     "brwon": "brown", "coffe": "coffee", "cerry": "cherry", 
@@ -44,7 +43,7 @@ KEYWORD_REPLACEMENTS = {
     "hairmask": "hair mask"
 }
 
-# MUSUH BEBUYUTAN (Anti-Clash)
+# Daftar Konflik (Anti-Clash)
 CONFLICT_MAP = {
     "olive": ["candlenut", "kemiri"],
     "zaitun": ["candlenut", "kemiri"],
@@ -52,12 +51,12 @@ CONFLICT_MAP = {
     "kemiri": ["olive", "zaitun"],
 }
 
-# KONFLIK VARIAN WARNA
+# KONFLIK WARNA (Hanya menghukum jika warna MUSUH muncul)
+# Kita hapus "putih" dari musuh "hitam" agar "Body White" tidak kena tembak.
 VARIANT_CONFLICTS = {
-    "hitam": ["kuning", "putih", "ungu", "tomato", "cherry"],
-    "black": ["yellow", "white", "purple", "tomato", "cherry"],
+    "hitam": ["kuning", "ungu", "tomato", "cherry", "gold"],
+    "black": ["yellow", "purple", "tomato", "cherry", "gold"],
     "kuning": ["hitam", "black", "ungu", "tomato", "cherry"],
-    "putih": ["hitam", "black", "kuning", "tomato", "cherry"],
 }
 
 # KEYWORD WAJIB
@@ -69,6 +68,7 @@ ESSENTIAL_KEYWORDS = ["banded", "bonus", "free", "gratis"]
 @st.cache_data(ttl=600)
 def load_data():
     sheet_url = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRqUOC7mKPH8FYtrmXUcFBa3zYQfh2sdC5sPFUFafInQG4wE-6bcBI3OEPLKCVuMdm2rZYgXzkBCcnS/pub?gid=0&single=true&output=csv'
+    
     try:
         df_raw = pd.read_csv(sheet_url, header=None)
         header_idx = -1
@@ -76,10 +76,12 @@ def load_data():
             if any("kode barang" in str(x).lower() for x in row.tolist()):
                 header_idx = i
                 break
+        
         if header_idx == -1: return None
 
         df = pd.read_csv(sheet_url, header=header_idx)
         df.columns = df.columns.str.strip()
+        
         col_map = {}
         for col in df.columns:
             c_low = col.lower()
@@ -103,6 +105,7 @@ def load_data():
         df['Full_Text'] = df['Merk'] + ' ' + df['Nama Barang']
         df['Clean_Text'] = df['Full_Text'].apply(lambda x: re.sub(r'[^a-z0-9\s]', ' ', str(x).lower()))
         return df
+
     except Exception: return None
 
 df = load_data()
@@ -130,15 +133,16 @@ def search_sku(query, brand_filter=None):
     if not query or len(query) < 2: return None, 0.0, "", ""
 
     query_clean = re.sub(r'[^a-z0-9\s]', ' ', query.lower())
+
+    # --- NO AUTO INJECTION ---
     search_query = query_clean
-    
-    # Injeksi Sinonim Zaitun -> Olive Oil (agar match dua-duanya)
     if "zaitun" in search_query and "olive" not in search_query:
         search_query += " olive oil" 
-
+    
+    # AI Cari Kandidat (Lebih banyak biar aman)
     query_vec = tfidf_vectorizer.transform([search_query])
     similarity_scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
-    top_indices = similarity_scores.argsort()[-25:][::-1]
+    top_indices = similarity_scores.argsort()[-30:][::-1]
     
     best_candidate = None
     best_score = -10.0
@@ -147,7 +151,7 @@ def search_sku(query, brand_filter=None):
     
     for idx in top_indices:
         current_score = similarity_scores[idx]
-        if current_score < 0.1: continue 
+        if current_score < 0.05: continue # Threshold rendah agar barang netral masuk
         
         row = df.iloc[idx]
         db_text = row['Clean_Text']
@@ -167,7 +171,7 @@ def search_sku(query, brand_filter=None):
         if not valid_number:
             current_score -= 2.0 
 
-        # 3. ANTI-CLASH
+        # 3. ANTI-CLASH (Zaitun vs Kemiri)
         conflict_found = False
         for key, enemies in CONFLICT_MAP.items():
             if key in query_clean:
@@ -176,22 +180,33 @@ def search_sku(query, brand_filter=None):
                         conflict_found = True; break
         if conflict_found: continue
 
-        # 4. BANDED LOGIC
+        # 4. BANDED PRIORITY (RAJA)
+        # Jika user minta Banded, barang Banded dapat Boost Besar (+3.0)
+        # Barang non-banded dapat Hukuman (-2.0)
         for kw in ESSENTIAL_KEYWORDS:
-            if kw in query_clean and kw not in db_text:
-                current_score -= 2.0 # Wajib ada
-            if kw not in query_clean and kw in db_text:
-                current_score -= 0.5 # Prioritaskan yg normal
-        
+            if kw in query_clean:
+                if kw in db_text:
+                    current_score += 3.0 # Prioritas Utama
+                else:
+                    current_score -= 2.0 # Buang non-banded
+            elif kw not in query_clean and kw in db_text:
+                current_score -= 0.5 # Kalau user gak minta, jangan kasih banded
+
         # 5. VARIANT ARBITRATOR (Warna)
-        # Jika user minta Hitam, Musuh (Kuning) DILARANG. Netral BOLEH.
         for variant, enemies in VARIANT_CONFLICTS.items():
             if variant in query_clean:
+                # Cek Musuh (Misal minta Hitam, ada Kuning) -> HUKUM
                 for enemy in enemies:
                     if enemy in db_text:
-                        current_score -= 3.0 # Hukuman Mati (Salah Warna)
+                        current_score -= 3.0
+                
+                # Cek Teman (Minta Hitam, ada Hitam) -> BOOST
                 if variant in db_text:
-                    current_score += 0.5 # Boost jika warna match
+                    current_score += 0.5
+                
+                # TOLERANSI NETRAL: 
+                # Jika user minta "Hitam" tapi DB tidak ada warna apapun (Netral)
+                # Maka jangan dihukum. Biarkan skornya apa adanya.
         
         # 6. COLLAGEN GUARD
         sensitive_keywords = ["collagen", "acne"] 
@@ -205,7 +220,7 @@ def search_sku(query, brand_filter=None):
             best_score = current_score
             best_candidate = row
 
-    if best_candidate is not None and best_score > 0.05:
+    if best_candidate is not None and best_score > 0.01:
         return best_candidate['Nama Barang'], best_score, best_candidate['Merk'], best_candidate['Kode Barang']
     else:
         return "❌ TIDAK DITEMUKAN", 0.0, "", "-"
@@ -262,7 +277,6 @@ def parse_po_complex(text):
         clean_keyword = line_processed.replace(qty_str.lower(), "").strip()
         clean_keyword = re.sub(r'[^\w\s]', '', clean_keyword).strip()
         
-        # HEADER DETECTION
         is_item = bool(qty_match)
         if not is_item:
             lower_key = clean_keyword.lower()
@@ -288,7 +302,6 @@ def parse_po_complex(text):
             continue 
 
         # --- SURGICAL FIX UNTUK AINIE ---
-        # Hanya ubah 100ml jadi 110ml JIKA brandnya Ainie & Manjakani
         if current_brand == "AINIE" and "manjakani" in clean_keyword and "100ml" in clean_keyword:
             clean_keyword = clean_keyword.replace("100ml", "110ml")
 
