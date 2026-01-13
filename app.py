@@ -7,9 +7,9 @@ import re
 # ==========================================
 # 0. KONFIGURASI HALAMAN
 # ==========================================
-st.set_page_config(page_title="AI Fakturis Pro", page_icon="🧬", layout="wide")
-st.title("🧬 AI Fakturis Pro (Final Fix)")
-st.markdown("Fitur: **Surgical Fix Manjakani (Fixed)**, **Smart Number**, & **Banded Logic**.")
+st.set_page_config(page_title="AI Fakturis Pro", page_icon="🚀", layout="wide")
+st.title("🚀 AI Fakturis Pro (Unit Splitter)")
+st.markdown("Fitur: **Unit Splitter (50g -> 50 g)**, **Pepaya->Papaya**, **Banded Logic**, & **Ainie Fix**.")
 
 # ==========================================
 # 1. KAMUS DATA & MAPPING
@@ -23,7 +23,7 @@ AUTO_VARIANTS = {
 }
 
 BRAND_ALIASES = {
-    "sekawan": "AINIE", "ainie": "AINIE", # Tambahan agar Ainie pasti uppercase
+    "sekawan": "AINIE", "ainie": "AINIE",
     "javinci": "JAVINCI", "thai": "THAI", 
     "syb": "SYB", "diosys": "DIOSYS", "satto": "SATTO", 
     "vlagio": "VLAGIO", "honor": "HONOR", "hanasui": "HANASUI",
@@ -36,15 +36,22 @@ KEYWORD_REPLACEMENTS = {
     "bulat": "150ml", "botol bulat": "150ml",
     "gepeng": "100ml", "botol gepeng": "100ml",
     
-    # 2. Typo & Singkatan
+    # 2. Fix Thai Soap & Buah-buahan
+    "pepaya": "papaya", 
+    "bengkuang": "bengkoang",
+    "barsoap": "soap",
+    "bar soap": "soap",
+    "sabun": "soap", # Standardisasi ke Inggris jika DB Inggris
+    
+    # 3. Typo & Singkatan
     "n.black": "natural black", "n black": "natural black", 
     "d.brwon": "dark brown", "d.brown": "dark brown",
     "brwon": "brown", "coffe": "coffee", "cerry": "cherry", 
     "temulawak": "temulawak", "hand body": "lotion", "hb": "lotion",
     "hairmask": "hair mask",
-    # FIX KHUSUS: Manjakani sering salah volume
-    "manjakani 100ml": "manjakani 110ml",
-    "manjakani 100": "manjakani 110ml"
+    
+    # 4. Fix Satuan Nempel (Manual backup)
+    "50g": "50gr", "50gram": "50gr"
 }
 
 # Daftar Konflik (Anti-Clash)
@@ -106,7 +113,9 @@ def load_data():
         df['Kode Barang'] = df['Kode Barang'].astype(str).str.strip().replace('nan', '-')
         
         df['Full_Text'] = df['Merk'] + ' ' + df['Nama Barang']
-        df['Clean_Text'] = df['Full_Text'].apply(lambda x: re.sub(r'[^a-z0-9\s]', ' ', str(x).lower()))
+        # Pembersihan teks + SPLIT ANGKA DAN HURUF (50g -> 50 g)
+        df['Clean_Text'] = df['Full_Text'].apply(lambda x: re.sub(r'(\d+)([a-zA-Z]+)', r'\1 \2', str(x).lower()))
+        df['Clean_Text'] = df['Clean_Text'].apply(lambda x: re.sub(r'[^a-z0-9\s]', ' ', x))
         return df
 
     except Exception: return None
@@ -135,10 +144,11 @@ def extract_numbers_robust(text):
 def search_sku(query, brand_filter=None):
     if not query or len(query) < 2: return None, 0.0, "", ""
 
-    query_clean = re.sub(r'[^a-z0-9\s]', ' ', query.lower())
+    # CLEANING INPUT: Split angka yg nempel (50g -> 50 g) agar terbaca sebagai angka
+    query_clean = re.sub(r'(\d+)([a-zA-Z]+)', r'\1 \2', query.lower())
+    query_clean = re.sub(r'[^a-z0-9\s]', ' ', query_clean)
+    
     search_query = query_clean
-
-    # Injeksi Sinonim Zaitun
     if "zaitun" in search_query and "olive" not in search_query:
         search_query += " olive oil" 
 
@@ -149,7 +159,8 @@ def search_sku(query, brand_filter=None):
     best_candidate = None
     best_score = -10.0
     
-    query_numbers = extract_numbers_robust(query.lower())
+    # Ambil angka dari query yang sudah di-split (jadi "50" terbaca)
+    query_numbers = extract_numbers_robust(query_clean)
     
     for idx in top_indices:
         current_score = similarity_scores[idx]
@@ -164,15 +175,16 @@ def search_sku(query, brand_filter=None):
             continue
         
         # 2. FILTER ANGKA (SMART VOLUME)
-        # Manjakani Special: Jika minta 110 (hasil replace), jangan dihukum jika DB ada 110
         valid_number = True
         for num in query_numbers:
             if int(num) > 20: 
-                if num not in db_text: 
+                # Cek exact match angka di DB (karena DB juga sudah di-split 50g -> 50 g)
+                # Gunakan regex boundary \b agar "50" tidak match dengan "500"
+                if not re.search(r'\b' + num + r'\b', db_text):
                     valid_number = False
                     break
         if not valid_number:
-            current_score -= 2.0 
+            current_score -= 2.0 # Hukuman Mati
 
         # 3. ANTI-CLASH
         conflict_found = False
@@ -199,7 +211,7 @@ def search_sku(query, brand_filter=None):
                 if variant in db_text:
                     current_score += 0.5 
         
-        # 6. COLLAGEN/ACNE GUARD
+        # 6. COLLAGEN GUARD
         sensitive_keywords = ["collagen", "acne"] 
         for kw in sensitive_keywords:
             if kw in db_text and kw not in query_clean:
@@ -244,8 +256,7 @@ def parse_po_complex(text):
 
         line_clean = re.sub(r'\([^)]*\)', '', line)
         
-        # REPLACEMENT LANGSUNG DI TEXT AWAL (Sebelum Split)
-        # Ini mengatasi masalah Manjakani 100ml
+        # REPLACEMENT LANGSUNG (Sebelum Split)
         line_clean = line_clean.replace("manjakani 100ml", "manjakani 110ml")
         line_clean = line_clean.replace("manjakani 100", "manjakani 110ml")
 
@@ -260,7 +271,6 @@ def parse_po_complex(text):
         
         line_processed = " ".join(replaced_words)
         
-        # HANDLE FRASA BENTUK
         line_processed = line_processed.replace("botol bulat", "150ml").replace("bulat", "150ml")
         line_processed = line_processed.replace("botol gepeng", "100ml").replace("gepeng", "100ml")
 
@@ -297,8 +307,7 @@ def parse_po_complex(text):
                 if len(lower_key) > 3: current_category = clean_keyword 
             continue 
 
-        # SURGICAL FIX AINIE (BACKUP JIKA DI ATAS GAGAL)
-        # Gunakan .upper() agar tidak peduli huruf besar/kecil
+        # SURGICAL FIX AINIE
         if current_brand and current_brand.upper() == "AINIE" and "manjakani" in clean_keyword and "100ml" in clean_keyword:
             clean_keyword = clean_keyword.replace("100ml", "110ml")
 
