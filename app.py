@@ -31,8 +31,8 @@ BRAND_ALIASES = {
     "body white": "JAVINCI", "holly": "HOLLY"
 }
 
-# Kamus Konsep
-CONCEPT_MAP = {
+# SAYA KEMBALIKAN NAMA VARIABELNYA JADI KEYWORD_REPLACEMENTS AGAR TIDAK ERROR
+KEYWORD_REPLACEMENTS = {
     "bulat": "150ml", "gepeng": "100ml",
     "all": "semua varian", "campur": "semua varian",
     "manjakani 100ml": "manjakani 110ml", "manjakani 100": "manjakani 110ml",
@@ -84,6 +84,7 @@ def load_data():
         # CLEANING DATABASE
         df['Clean_Text'] = df['Nama'] + " " + df['Merk']
         df['Clean_Text'] = df['Clean_Text'].astype(str).str.lower()
+        # Unit Splitter (Penting!)
         df['Clean_Text'] = df['Clean_Text'].apply(lambda x: re.sub(r'(\d+)([a-zA-Z]+)', r'\1 \2', x))
         df['Clean_Text'] = df['Clean_Text'].apply(lambda x: re.sub(r'[^a-z0-9\s]', ' ', x))
         
@@ -112,11 +113,13 @@ def search_hybrid(query, brand_filter=None):
     if not query or len(query) < 2: return None, 0.0, "", ""
 
     # PRE-PROCESS QUERY
+    # Unit Splitter untuk Query juga
     query_clean = re.sub(r'(\d+)([a-zA-Z]+)', r'\1 \2', query.lower())
     query_clean = re.sub(r'[^a-z0-9\s]', ' ', query_clean).strip()
     
     search_query = query_clean
-    for k, v in CONCEPT_MAP.items():
+    # Injeksi Sinonim
+    for k, v in KEYWORD_REPLACEMENTS.items():
         if k in search_query: search_query += f" {v}"
 
     # STEP 1: TF-IDF
@@ -137,10 +140,9 @@ def search_hybrid(query, brand_filter=None):
         db_brand = str(row['Merk']).lower()
         
         # --- PENGGANTI RAPIDFUZZ (Native Python) ---
-        # Menggunakan SequenceMatcher untuk cek kemiripan karakter
         fuzzy_ratio = SequenceMatcher(None, query_clean, db_text).ratio()
         
-        # Gabungkan skor (TF-IDF + Fuzzy Native)
+        # Gabungkan skor
         final_score = (row['tfidf_score'] * 0.4) + (fuzzy_ratio * 0.6)
         
         # --- LOGIC FILTER ---
@@ -150,6 +152,7 @@ def search_hybrid(query, brand_filter=None):
         num_mismatch = False
         for num in user_nums:
             if int(num) > 20: 
+                # Regex boundary check
                 if not re.search(r'\b' + num + r'\b', db_text):
                     num_mismatch = True
         
@@ -237,6 +240,7 @@ def parse_po(text):
         words = clean_name.lower().split()
         final_words = []
         for w in words:
+            # FIX ERROR: Sekarang menggunakan KEYWORD_REPLACEMENTS yang sudah didefinisikan
             final_words.append(KEYWORD_REPLACEMENTS.get(w, w))
         clean_name = " ".join(final_words)
 
