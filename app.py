@@ -119,6 +119,8 @@ def load_data():
         
         df['Full_Text'] = df['Merk'] + ' ' + df['Nama Barang']
         # Cleaning + Unit Splitter (50g -> 50 g)
+        # PENTING: Regex ini memisahkan angka yang nempel dengan huruf (misal 50g -> 50 g)
+        # Ini krusial agar angka 50 bisa terbaca sebagai angka oleh sistem validasi
         df['Clean_Text'] = df['Full_Text'].apply(lambda x: re.sub(r'(\d+)([a-zA-Z]+)', r'\1 \2', str(x).lower()))
         df['Clean_Text'] = df['Clean_Text'].apply(lambda x: re.sub(r'[^a-z0-9\s]', ' ', x))
         return df
@@ -150,6 +152,7 @@ def search_sku(query, brand_filter=None):
     if not query or len(query) < 2: return None, 0.0, "", ""
 
     # 1. CLEANING + UNIT SPLITTER (50g -> 50 g)
+    # Kita lakukan cleaning yang SAMA PERSIS dengan yang dilakukan pada database di load_data
     query_clean = re.sub(r'(\d+)([a-zA-Z]+)', r'\1 \2', query.lower())
     query_clean = re.sub(r'[^a-z0-9\s]', ' ', query_clean)
     
@@ -166,7 +169,7 @@ def search_sku(query, brand_filter=None):
     best_candidate = None
     best_score = -10.0
     
-    # Ambil angka dari query yang SUDAH di-split
+    # Ambil angka dari query yang SUDAH di-split (jadi "50" terbaca)
     query_numbers = extract_numbers_robust(query_clean)
     
     for idx in top_indices:
@@ -186,11 +189,12 @@ def search_sku(query, brand_filter=None):
         valid_number = True
         for num in query_numbers:
             if int(num) > 20: 
+                # Cek exact match angka di DB (karena DB juga sudah di-split 50g -> 50 g)
                 if not re.search(r'\b' + num + r'\b', db_text):
                     valid_number = False
                     break
         if not valid_number:
-            current_score -= 2.0 
+            current_score -= 2.0 # Hukuman Mati
 
         # C. ANTI-CLASH
         conflict_found = False
