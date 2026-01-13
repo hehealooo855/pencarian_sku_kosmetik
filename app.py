@@ -2,21 +2,19 @@ import streamlit as st
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from rapidfuzz import process, fuzz, utils
 import re
+from difflib import SequenceMatcher # PENGGANTI RAPIDFUZZ (BAWAAN PYTHON)
 
 # ==========================================
 # 0. KONFIGURASI & SETUP
 # ==========================================
-st.set_page_config(page_title="AI Fakturis Enterprise", page_icon="🏢", layout="wide")
-st.title("🏢 AI Fakturis Enterprise (Hybrid Engine)")
-st.markdown("Teknologi: **TF-IDF (Filter)** + **RapidFuzz (Selection)** + **Context Aware**.")
+st.set_page_config(page_title="AI Fakturis Pro", page_icon="🏢", layout="wide")
+st.title("🏢 AI Fakturis Pro (Standard Lib Version)")
+st.markdown("Teknologi: **TF-IDF** + **Difflib (Native Python)** - Tanpa Install Tambahan.")
 
 # ==========================================
-# 1. KAMUS DATA (Hanya yang krusial)
+# 1. KAMUS DATA
 # ==========================================
-# Kita buang kamus typo kecil (cerry, brwon) karena Fuzzy Logic akan menanganinya otomatis!
-
 AUTO_VARIANTS = {
     "powder mask": ["Greentea", "Lavender", "Peppermint", "Strawberry", "Tea Tree"],
     "peeling gel": ["Aloe", "Charcoal", "Milk", "Snail", "Lemon"],
@@ -33,17 +31,18 @@ BRAND_ALIASES = {
     "body white": "JAVINCI", "holly": "HOLLY"
 }
 
-# Kamus Konsep/Sinonim (Bukan Typo)
+# Kamus Konsep
 CONCEPT_MAP = {
     "bulat": "150ml", "gepeng": "100ml",
     "all": "semua varian", "campur": "semua varian",
     "manjakani 100ml": "manjakani 110ml", "manjakani 100": "manjakani 110ml",
     "pepaya": "papaya", "bengkuang": "bengkoang",
-    "barsoap": "soap", "sabun": "soap",
-    "minyak": "oil", "zaitun": "olive oil" # Kita kembalikan ini untuk membantu Fuzzy
+    "barsoap": "soap", "bar soap": "soap", "sabun": "soap",
+    "minyak": "oil", "zaitun": "olive oil",
+    "50g": "50gr", "50gram": "50gr"
 }
 
-# Konflik Mutlak (Jika ada A, tidak boleh ada B)
+# Konflik Mutlak
 HARD_CONFLICTS = {
     "olive": ["candlenut", "kemiri", "urang"],
     "zaitun": ["candlenut", "kemiri", "urang"],
@@ -70,7 +69,6 @@ def load_data():
         df = pd.read_csv(sheet_url, header=header_idx)
         df.columns = df.columns.str.strip()
         
-        # Mapping Kolom Otomatis
         col_map = {}
         for col in df.columns:
             c_low = col.lower()
@@ -83,8 +81,7 @@ def load_data():
         df = df.rename(columns={col_map['kode']: 'Kode', col_map['nama']: 'Nama', col_map['merk']: 'Merk'})
         df = df[['Kode', 'Nama', 'Merk']].dropna(subset=['Nama'])
         
-        # CLEANING DATABASE (Standardisasi)
-        # Pisahkan angka dari huruf (50g -> 50 g, 100ml -> 100 ml)
+        # CLEANING DATABASE
         df['Clean_Text'] = df['Nama'] + " " + df['Merk']
         df['Clean_Text'] = df['Clean_Text'].astype(str).str.lower()
         df['Clean_Text'] = df['Clean_Text'].apply(lambda x: re.sub(r'(\d+)([a-zA-Z]+)', r'\1 \2', x))
@@ -96,12 +93,11 @@ def load_data():
 df = load_data()
 
 # ==========================================
-# 3. HYBRID ENGINE (TF-IDF + FUZZY)
+# 3. HYBRID ENGINE (TF-IDF + DIFFLIB)
 # ==========================================
 @st.cache_resource
 def train_tfidf(data):
     if data is None or data.empty: return None, None
-    # Ngram 1-3 menangkap "tea tree", "olive oil" sebagai satu kesatuan
     vectorizer = TfidfVectorizer(analyzer='word', ngram_range=(1, 3)) 
     matrix = vectorizer.fit_transform(data)
     return vectorizer, matrix
@@ -115,29 +111,22 @@ def extract_numbers(text):
 def search_hybrid(query, brand_filter=None):
     if not query or len(query) < 2: return None, 0.0, "", ""
 
-    # 1. PRE-PROCESS QUERY
-    # Pisahkan angka nempel (50g -> 50 g)
+    # PRE-PROCESS QUERY
     query_clean = re.sub(r'(\d+)([a-zA-Z]+)', r'\1 \2', query.lower())
-    # Bersihkan simbol
     query_clean = re.sub(r'[^a-z0-9\s]', ' ', query_clean).strip()
     
-    # Injeksi Sinonim (Tanpa menghapus aslinya)
     search_query = query_clean
     for k, v in CONCEPT_MAP.items():
         if k in search_query: search_query += f" {v}"
 
-    # 2. STEP 1: TF-IDF (Penyaringan Kasar)
-    # Ambil 50 kandidat teratas berdasarkan kata yang sama
+    # STEP 1: TF-IDF
     query_vec = tfidf_vectorizer.transform([search_query])
     cosine_scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
-    # Ambil index top 50
     top_indices = cosine_scores.argsort()[-50:][::-1]
     
     candidates = df.iloc[top_indices].copy()
-    # Tambahkan skor TF-IDF ke dataframe sementara
     candidates['tfidf_score'] = cosine_scores[top_indices]
     
-    # 3. STEP 2: LOGIC FILTER & SCORING
     best_match = None
     best_score = -100
     
@@ -147,65 +136,50 @@ def search_hybrid(query, brand_filter=None):
         db_text = row['Clean_Text']
         db_brand = str(row['Merk']).lower()
         
-        # Base Score dari Fuzzy Match (WRatio sangat pintar menangani singkatan/typo)
-        # Kita bandingkan query asli user (yang bersih) dengan database
-        fuzzy_score = fuzz.WRatio(query_clean, db_text) / 100.0
+        # --- PENGGANTI RAPIDFUZZ (Native Python) ---
+        # Menggunakan SequenceMatcher untuk cek kemiripan karakter
+        fuzzy_ratio = SequenceMatcher(None, query_clean, db_text).ratio()
         
-        # Gabungkan skor TF-IDF dan Fuzzy
-        final_score = (row['tfidf_score'] * 0.4) + (fuzzy_score * 0.6)
+        # Gabungkan skor (TF-IDF + Fuzzy Native)
+        final_score = (row['tfidf_score'] * 0.4) + (fuzzy_ratio * 0.6)
         
-        # --- PENALTI DAN BONUS (THE BRAIN) ---
-        
-        # A. BRAND LOCK (Wajib)
+        # --- LOGIC FILTER ---
         if brand_filter and brand_filter.lower() not in db_brand:
-            continue # Skip beda brand
+            continue
             
-        # B. CEK ANGKA (CRITICAL)
-        # Jika user tulis "100", DB harus ada "100". 
-        # Pengecualian: User tidak tulis angka (aman).
         num_mismatch = False
         for num in user_nums:
-            if int(num) > 20: # Abaikan angka kecil (mungkin varian)
-                # Cek exact word match di DB
+            if int(num) > 20: 
                 if not re.search(r'\b' + num + r'\b', db_text):
                     num_mismatch = True
         
-        if num_mismatch: 
-            final_score -= 0.5 # Hukuman berat (misal minta 100ml dikasih 50ml)
+        if num_mismatch: final_score -= 0.5 
 
-        # C. ANTI-CLASH (Musuh Bebuyutan)
         clash = False
         for key, enemies in HARD_CONFLICTS.items():
             if key in query_clean:
                 for enemy in enemies:
                     if enemy in db_text:
                         clash = True; break
-        if clash: continue # Langsung buang
+        if clash: continue 
 
-        # D. BANDED CHECK
         for kw in ESSENTIAL_KEYWORDS:
             if kw in query_clean and kw not in db_text:
-                final_score -= 0.4 # User minta banded, DB gak ada
+                final_score -= 0.4 
             if kw not in query_clean and kw in db_text:
-                final_score -= 0.1 # DB banded, user gak minta (masih boleh tampil tapi prioritas turun dikit)
+                final_score -= 0.1 
 
-        # E. VARIANT COLOR CHECK (Hitam vs Kuning)
-        # Jika user sebut warna, pastikan DB juga punya atau DB netral.
-        # Jika DB punya warna lain -> HUKUM.
+        # Color Check
         colors = ["hitam", "kuning", "putih", "ungu", "gold", "pink", "blue"]
         for c in colors:
             if c in query_clean and c not in db_text:
-                # Cek apakah DB punya warna lain?
                 has_other_color = any(oc in db_text for oc in colors if oc != c)
-                if has_other_color:
-                    final_score -= 0.5 # Salah warna
+                if has_other_color: final_score -= 0.5 
 
-        # Simpan pemenang
         if final_score > best_score:
             best_score = final_score
             best_match = row
 
-    # Threshold dinamis
     threshold = 0.35 if not brand_filter else 0.25
     
     if best_match is not None and best_score > threshold:
@@ -225,7 +199,6 @@ def parse_po(text):
     footer_bonus = ""
     header_bonus = ""
     
-    # 1. Cek Footer Bonus (Baris terakhir yang cuma angka)
     for line in reversed(lines):
         if re.fullmatch(r'\s*\d+\s*[\+\*]\s*\d+\s*', line):
             footer_bonus = line.strip()
@@ -237,88 +210,66 @@ def parse_po(text):
         line = line.strip()
         if not line or line == "-" or line == footer_bonus: continue
         
-        # 2. Pre-Cleaning
-        # Hapus kata transaksi
         line_clean = re.sub(r'\b(cash|tunai|kredit|tempo)\b', '', line, flags=re.IGNORECASE)
-        # Hapus kurung
         line_clean = re.sub(r'[\(\)]', ' ', line_clean)
         
-        # 3. DETEKSI ITEM (REGEX MONSTER)
-        # Mendeteksi: 12pcs, 12 pcs, x12, 12x, @12, @x12, 12+1
+        # Regex Monster untuk Qty (x20, @6, dll)
         qty_pattern = r'(?:^|\s)(?:x|@|@x)?\s*(\d+)\s*(?:x|pcs|pc|lsn|box|ktk|pak|btl)?(?:\s*[\+\*]\s*\d+)?(?:$|\s)'
         qty_match = re.findall(qty_pattern, line_clean, re.IGNORECASE)
         
         qty_str = ""
         is_item = False
         
-        # Ambil angka pertama yang valid sebagai Qty utama
         if qty_match:
-            # Filter hasil kosong dari regex
             valid_nums = [m for m in qty_match if m.strip()]
             if valid_nums:
-                qty_str = valid_nums[0] # Ambil angka pertama
+                qty_str = valid_nums[0]
                 is_item = True
         
-        # Cek Bonus Spesifik di baris ini (misal 12+1)
         line_bonus_match = re.search(r'\d+\s*[\+\*]\s*\d+', line_clean)
         line_bonus = line_bonus_match.group(0) if line_bonus_match else ""
-        if line_bonus: is_item = True # Kalau ada bonus, pasti item
+        if line_bonus: is_item = True
 
-        # Bersihkan Qty dari teks untuk pencarian nama
         clean_name = re.sub(qty_pattern, ' ', line_clean, flags=re.IGNORECASE)
-        # Bersihkan bonus pattern
         clean_name = re.sub(r'\d+\s*[\+\*]\s*\d+', ' ', clean_name)
         
-        # Normalisasi spasi dan simbol
         clean_name = re.sub(r'[^\w\s]', ' ', clean_name).strip()
-        # Normalisasi kata kunci (Translate)
         words = clean_name.lower().split()
         final_words = []
         for w in words:
             final_words.append(KEYWORD_REPLACEMENTS.get(w, w))
         clean_name = " ".join(final_words)
 
-        # 4. LOGIKA HIERARKI (Header vs Item)
         if not is_item:
-            # Cek apakah ini Brand Header?
             lower_name = clean_name.lower()
             detected_brand = None
             
-            # Cek Alias
             for alias, real in BRAND_ALIASES.items():
                 if lower_name == alias or lower_name.startswith(alias + " "):
                     detected_brand = real
-                    clean_name = lower_name.replace(alias, "").strip() # Sisa teks jadi kategori
+                    clean_name = lower_name.replace(alias, "").strip()
                     break
             
-            # Cek DB
             if not detected_brand:
                 for db_b in db_brands:
-                    if db_b in lower_name: # Partial match allowed for header
+                    if db_b in lower_name: 
                         detected_brand = next((v for k,v in BRAND_ALIASES.items() if k == db_b), db_b.upper())
                         clean_name = lower_name.replace(db_b, "").strip()
                         break
             
             if detected_brand:
                 curr_brand = detected_brand
-                curr_cat = clean_name # Sisa teks header jadi kategori (misal: "Honor (12+1)" -> Brand: Honor, Cat: "")
+                curr_cat = clean_name
                 header_bonus = line_bonus
                 continue
             else:
-                # Bukan brand, mungkin sub-kategori (misal "Powder Mask")
                 if len(clean_name) > 2:
                     curr_cat = clean_name
             continue
 
-        # 5. CONSTRUCT QUERY
-        # Gabungkan: Brand + Kategori + Nama Item
-        # Misal: SYB + Powder Mask + Tea Tree
-        
-        # Handle "Semua Varian"
         expand_list = []
         if "semua varian" in clean_name.lower():
             found_collection = False
-            # Cek kategori mana yang dimaksud
             check_str = f"{curr_cat} {clean_name}".lower()
             for key, variants in AUTO_VARIANTS.items():
                 if key in check_str:
@@ -327,13 +278,11 @@ def parse_po(text):
                         expand_list.append(query)
                     found_collection = True
                     break
-            if not found_collection: # Default fallback
+            if not found_collection:
                 expand_list.append(f"{curr_brand} {curr_cat} {clean_name}")
         else:
-            # Item biasa
             expand_list.append(f"{curr_brand} {curr_cat} {clean_name}")
 
-        # 6. SEARCH
         active_bonus = line_bonus if line_bonus else (header_bonus if header_bonus else footer_bonus)
         
         for q in expand_list:
@@ -379,7 +328,6 @@ with col2:
                 use_container_width=True
             )
             
-            # Text Copy Format
             txt = f"Customer: {store}\n"
             for item in data:
                 b_txt = f"({item['Bonus']})" if item['Bonus'] else ""
