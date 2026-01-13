@@ -7,9 +7,9 @@ import re
 # ==========================================
 # 0. KONFIGURASI HALAMAN
 # ==========================================
-st.set_page_config(page_title="AI Fakturis Pro", page_icon="🚀", layout="wide")
-st.title("🚀 AI Fakturis Pro (Unit Splitter)")
-st.markdown("Fitur: **Unit Splitter (50g -> 50 g)**, **Pepaya->Papaya**, **Banded Logic**, & **Ainie Fix**.")
+st.set_page_config(page_title="AI Fakturis Pro", page_icon="💎", layout="wide")
+st.title("💎 AI Fakturis Pro (Ultimate Fix)")
+st.markdown("Fitur: **Anti-Noise (Hapus CASH/TUNAI)**, **Regex Fix Ainie**, **Smart Number**, & **Brand Lock**.")
 
 # ==========================================
 # 1. KAMUS DATA & MAPPING
@@ -36,22 +36,15 @@ KEYWORD_REPLACEMENTS = {
     "bulat": "150ml", "botol bulat": "150ml",
     "gepeng": "100ml", "botol gepeng": "100ml",
     
-    # 2. Fix Thai Soap & Buah-buahan
-    "pepaya": "papaya", 
-    "bengkuang": "bengkoang",
-    "barsoap": "soap",
-    "bar soap": "soap",
-    "sabun": "soap", # Standardisasi ke Inggris jika DB Inggris
-    
-    # 3. Typo & Singkatan
+    # 2. Typo & Singkatan
     "n.black": "natural black", "n black": "natural black", 
     "d.brwon": "dark brown", "d.brown": "dark brown",
     "brwon": "brown", "coffe": "coffee", "cerry": "cherry", 
+    "blosoms": "blossom", "blosom": "blossom", "shunsine": "sunshine",
     "temulawak": "temulawak", "hand body": "lotion", "hb": "lotion",
     "hairmask": "hair mask",
-    
-    # 4. Fix Satuan Nempel (Manual backup)
-    "50g": "50gr", "50gram": "50gr"
+    # Fix umum
+    "pepaya": "papaya", "bengkuang": "bengkoang"
 }
 
 # Daftar Konflik (Anti-Clash)
@@ -62,7 +55,7 @@ CONFLICT_MAP = {
     "kemiri": ["olive", "zaitun"],
 }
 
-# KONFLIK VARIAN WARNA
+# KONFLIK WARNA
 VARIANT_CONFLICTS = {
     "hitam": ["kuning", "ungu", "tomato", "cherry", "gold"],
     "black": ["yellow", "purple", "tomato", "cherry", "gold"],
@@ -113,7 +106,7 @@ def load_data():
         df['Kode Barang'] = df['Kode Barang'].astype(str).str.strip().replace('nan', '-')
         
         df['Full_Text'] = df['Merk'] + ' ' + df['Nama Barang']
-        # Pembersihan teks + SPLIT ANGKA DAN HURUF (50g -> 50 g)
+        # Cleaning awal: pisahkan angka dan huruf (50g -> 50 g)
         df['Clean_Text'] = df['Full_Text'].apply(lambda x: re.sub(r'(\d+)([a-zA-Z]+)', r'\1 \2', str(x).lower()))
         df['Clean_Text'] = df['Clean_Text'].apply(lambda x: re.sub(r'[^a-z0-9\s]', ' ', x))
         return df
@@ -144,7 +137,7 @@ def extract_numbers_robust(text):
 def search_sku(query, brand_filter=None):
     if not query or len(query) < 2: return None, 0.0, "", ""
 
-    # CLEANING INPUT: Split angka yg nempel (50g -> 50 g) agar terbaca sebagai angka
+    # CLEANING: Pisahkan angka nempel (50g -> 50 g)
     query_clean = re.sub(r'(\d+)([a-zA-Z]+)', r'\1 \2', query.lower())
     query_clean = re.sub(r'[^a-z0-9\s]', ' ', query_clean)
     
@@ -154,12 +147,11 @@ def search_sku(query, brand_filter=None):
 
     query_vec = tfidf_vectorizer.transform([search_query])
     similarity_scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
-    top_indices = similarity_scores.argsort()[-25:][::-1]
+    top_indices = similarity_scores.argsort()[-30:][::-1]
     
     best_candidate = None
     best_score = -10.0
     
-    # Ambil angka dari query yang sudah di-split (jadi "50" terbaca)
     query_numbers = extract_numbers_robust(query_clean)
     
     for idx in top_indices:
@@ -178,13 +170,12 @@ def search_sku(query, brand_filter=None):
         valid_number = True
         for num in query_numbers:
             if int(num) > 20: 
-                # Cek exact match angka di DB (karena DB juga sudah di-split 50g -> 50 g)
-                # Gunakan regex boundary \b agar "50" tidak match dengan "500"
+                # Cek exact match angka di DB (karena DB juga sudah di-split)
                 if not re.search(r'\b' + num + r'\b', db_text):
                     valid_number = False
                     break
         if not valid_number:
-            current_score -= 2.0 # Hukuman Mati
+            current_score -= 2.0 
 
         # 3. ANTI-CLASH
         conflict_found = False
@@ -238,6 +229,7 @@ def parse_po_complex(text):
     current_brand = ""      
     current_category = ""   
     footer_bonus = ""
+    global_header_bonus = "" # Tambahan: Bonus di header Brand
     
     store_name = lines[0].strip() if lines else "Unknown Store"
     
@@ -254,11 +246,16 @@ def parse_po_complex(text):
         if not line or line == "-": continue
         if line == footer_bonus: continue 
 
-        line_clean = re.sub(r'\([^)]*\)', '', line)
+        # CLEANING HEADER NOISE (CASH/TUNAI)
+        # Hapus kata-kata tidak penting agar deteksi brand/item lancar
+        line_clean = re.sub(r'\b(cash|tunai|kredit|tempo)\b', '', line, flags=re.IGNORECASE)
+        line_clean = re.sub(r'\([^)]*\)', '', line_clean) # Hapus isi kurung
         
-        # REPLACEMENT LANGSUNG (Sebelum Split)
-        line_clean = line_clean.replace("manjakani 100ml", "manjakani 110ml")
-        line_clean = line_clean.replace("manjakani 100", "manjakani 110ml")
+        # SURGICAL FIX AINIE (REGEX PINTAR)
+        # Ubah "manjakani...100ml" jadi "manjakani...110ml" apapun kata di tengahnya
+        # Contoh: "manjakani botol 100ml" -> "manjakani botol 110ml"
+        line_clean = re.sub(r'(manjakani.*?)\b100\s*ml\b', r'\1 110ml', line_clean, flags=re.IGNORECASE)
+        line_clean = re.sub(r'(manjakani.*?)\b100\b', r'\1 110ml', line_clean, flags=re.IGNORECASE)
 
         words = line_clean.lower().split()
         replaced_words = []
@@ -277,6 +274,7 @@ def parse_po_complex(text):
         qty_match = re.search(r'(per\s*)?(\d+)?\s*(pcs|pc|lsn|lusin|box|kotak|btl|botol|pack|kotak)', line, re.IGNORECASE)
         qty_str = qty_match.group(0) if qty_match else ""
         
+        # Cek bonus baris (misal 12+1)
         bonus_match = re.search(r'\(?(\d+\s*\+\s*\d+)\)?(?!%)', line)
         line_bonus = bonus_match.group(1) if bonus_match else ""
         
@@ -288,28 +286,30 @@ def parse_po_complex(text):
             lower_key = clean_keyword.lower()
             detected_alias = None
             context_suffix = ""
+            
+            # Cek Alias
             for alias, real_brand in BRAND_ALIASES.items():
                 if lower_key == alias or lower_key.startswith(alias + " "):
                     detected_alias = real_brand
                     context_suffix = lower_key.replace(alias, "").strip()
                     break
+            
+            # Cek DB
             if not detected_alias:
                 for brand in db_brands:
                     if re.search(r'\b' + re.escape(brand) + r'\b', lower_key):
                         detected_alias = brand
                         context_suffix = lower_key.replace(brand, "").strip()
                         break
+            
             if detected_alias:
                 current_brand = detected_alias 
                 current_category = context_suffix 
+                global_header_bonus = line_bonus # Simpan bonus header (misal Honor 12+1)
                 continue 
             else:
                 if len(lower_key) > 3: current_category = clean_keyword 
             continue 
-
-        # SURGICAL FIX AINIE
-        if current_brand and current_brand.upper() == "AINIE" and "manjakani" in clean_keyword and "100ml" in clean_keyword:
-            clean_keyword = clean_keyword.replace("100ml", "110ml")
 
         items_to_process = []
         if "semua varian" in clean_keyword.lower():
@@ -332,8 +332,9 @@ def parse_po_complex(text):
         else:
             final_query = f"{current_brand} {current_category} {clean_keyword}"
             items_to_process.append(final_query.strip())
-            
-        final_bonus = line_bonus if line_bonus else footer_bonus
+        
+        # PRIORITAS BONUS: Item Bonus > Header Bonus > Footer Bonus
+        final_bonus = line_bonus if line_bonus else (global_header_bonus if global_header_bonus else footer_bonus)
         
         for query in items_to_process:
             nama, score, merk, kode = search_sku(query, brand_filter=current_brand)
