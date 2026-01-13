@@ -3,22 +3,25 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import re
-from difflib import SequenceMatcher # PENGGANTI RAPIDFUZZ (BAWAAN PYTHON)
+from difflib import SequenceMatcher
 
 # ==========================================
 # 0. KONFIGURASI & SETUP
 # ==========================================
-st.set_page_config(page_title="AI Fakturis Pro", page_icon="🏢", layout="wide")
-st.title("🏢 AI Fakturis Pro (Standard Lib Version)")
-st.markdown("Teknologi: **TF-IDF** + **Difflib (Native Python)** - Tanpa Install Tambahan.")
+st.set_page_config(page_title="AI Fakturis Pro", page_icon="🧬", layout="wide")
+st.title("🧬 AI Fakturis Pro (Smart Category Switch)")
+st.markdown("Fitur: **Auto-Switch Category**, **Typo Fix (Trii->Tree)**, **Regex Qty Monster**.")
 
 # ==========================================
 # 1. KAMUS DATA
 # ==========================================
+# Tambahkan varian lengkap agar "All" bisa bekerja
 AUTO_VARIANTS = {
     "powder mask": ["Greentea", "Lavender", "Peppermint", "Strawberry", "Tea Tree"],
     "peeling gel": ["Aloe", "Charcoal", "Milk", "Snail", "Lemon"],
-    "toner badan": ["Red Jelly", "Coklat", "Fresh Skin", "Kelupas"],
+    "peeling": ["Aloe", "Charcoal", "Milk", "Snail", "Lemon"], # Alias pendek
+    "toner badan": ["Red Jelly", "Coklat", "Fresh Skin", "Kelupas", "Ginseng"],
+    "toner": ["Rose", "Chamomile", "Aloe", "Lemon"],
     "masker wajah": ["Bengkoang", "Aloe Vera", "Cucumber", "Avocado"]
 }
 
@@ -31,7 +34,6 @@ BRAND_ALIASES = {
     "body white": "JAVINCI", "holly": "HOLLY"
 }
 
-# SAYA KEMBALIKAN NAMA VARIABELNYA JADI KEYWORD_REPLACEMENTS AGAR TIDAK ERROR
 KEYWORD_REPLACEMENTS = {
     "bulat": "150ml", "gepeng": "100ml",
     "all": "semua varian", "campur": "semua varian",
@@ -39,7 +41,9 @@ KEYWORD_REPLACEMENTS = {
     "pepaya": "papaya", "bengkuang": "bengkoang",
     "barsoap": "soap", "bar soap": "soap", "sabun": "soap",
     "minyak": "oil", "zaitun": "olive oil",
-    "50g": "50gr", "50gram": "50gr"
+    "50g": "50gr", "50gram": "50gr",
+    # Typo Fix
+    "trii": "tree", "pappermint": "peppermint", "pepermin": "peppermint"
 }
 
 # Konflik Mutlak
@@ -81,10 +85,8 @@ def load_data():
         df = df.rename(columns={col_map['kode']: 'Kode', col_map['nama']: 'Nama', col_map['merk']: 'Merk'})
         df = df[['Kode', 'Nama', 'Merk']].dropna(subset=['Nama'])
         
-        # CLEANING DATABASE
         df['Clean_Text'] = df['Nama'] + " " + df['Merk']
         df['Clean_Text'] = df['Clean_Text'].astype(str).str.lower()
-        # Unit Splitter (Penting!)
         df['Clean_Text'] = df['Clean_Text'].apply(lambda x: re.sub(r'(\d+)([a-zA-Z]+)', r'\1 \2', x))
         df['Clean_Text'] = df['Clean_Text'].apply(lambda x: re.sub(r'[^a-z0-9\s]', ' ', x))
         
@@ -94,7 +96,7 @@ def load_data():
 df = load_data()
 
 # ==========================================
-# 3. HYBRID ENGINE (TF-IDF + DIFFLIB)
+# 3. HYBRID ENGINE
 # ==========================================
 @st.cache_resource
 def train_tfidf(data):
@@ -112,17 +114,13 @@ def extract_numbers(text):
 def search_hybrid(query, brand_filter=None):
     if not query or len(query) < 2: return None, 0.0, "", ""
 
-    # PRE-PROCESS QUERY
-    # Unit Splitter untuk Query juga
     query_clean = re.sub(r'(\d+)([a-zA-Z]+)', r'\1 \2', query.lower())
     query_clean = re.sub(r'[^a-z0-9\s]', ' ', query_clean).strip()
     
     search_query = query_clean
-    # Injeksi Sinonim
     for k, v in KEYWORD_REPLACEMENTS.items():
         if k in search_query: search_query += f" {v}"
 
-    # STEP 1: TF-IDF
     query_vec = tfidf_vectorizer.transform([search_query])
     cosine_scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
     top_indices = cosine_scores.argsort()[-50:][::-1]
@@ -139,20 +137,15 @@ def search_hybrid(query, brand_filter=None):
         db_text = row['Clean_Text']
         db_brand = str(row['Merk']).lower()
         
-        # --- PENGGANTI RAPIDFUZZ (Native Python) ---
         fuzzy_ratio = SequenceMatcher(None, query_clean, db_text).ratio()
-        
-        # Gabungkan skor
         final_score = (row['tfidf_score'] * 0.4) + (fuzzy_ratio * 0.6)
         
-        # --- LOGIC FILTER ---
         if brand_filter and brand_filter.lower() not in db_brand:
             continue
             
         num_mismatch = False
         for num in user_nums:
             if int(num) > 20: 
-                # Regex boundary check
                 if not re.search(r'\b' + num + r'\b', db_text):
                     num_mismatch = True
         
@@ -172,7 +165,6 @@ def search_hybrid(query, brand_filter=None):
             if kw not in query_clean and kw in db_text:
                 final_score -= 0.1 
 
-        # Color Check
         colors = ["hitam", "kuning", "putih", "ungu", "gold", "pink", "blue"]
         for c in colors:
             if c in query_clean and c not in db_text:
@@ -191,7 +183,7 @@ def search_hybrid(query, brand_filter=None):
         return "❌ TIDAK DITEMUKAN", 0.0, "", "-"
 
 # ==========================================
-# 4. PARSER PO (REGEX MONSTER)
+# 4. PARSER PO
 # ==========================================
 def parse_po(text):
     lines = text.split('\n')
@@ -213,10 +205,13 @@ def parse_po(text):
         line = line.strip()
         if not line or line == "-" or line == footer_bonus: continue
         
-        line_clean = re.sub(r'\b(cash|tunai|kredit|tempo)\b', '', line, flags=re.IGNORECASE)
+        # CLEANING AWAL (Hapus bullet strip - di depan)
+        line_clean = re.sub(r'^[\-\.\s]+', '', line) 
+        
+        line_clean = re.sub(r'\b(cash|tunai|kredit|tempo)\b', '', line_clean, flags=re.IGNORECASE)
         line_clean = re.sub(r'[\(\)]', ' ', line_clean)
         
-        # Regex Monster untuk Qty (x20, @6, dll)
+        # Regex Qty
         qty_pattern = r'(?:^|\s)(?:x|@|@x)?\s*(\d+)\s*(?:x|pcs|pc|lsn|box|ktk|pak|btl)?(?:\s*[\+\*]\s*\d+)?(?:$|\s)'
         qty_match = re.findall(qty_pattern, line_clean, re.IGNORECASE)
         
@@ -240,7 +235,6 @@ def parse_po(text):
         words = clean_name.lower().split()
         final_words = []
         for w in words:
-            # FIX ERROR: Sekarang menggunakan KEYWORD_REPLACEMENTS yang sudah didefinisikan
             final_words.append(KEYWORD_REPLACEMENTS.get(w, w))
         clean_name = " ".join(final_words)
 
@@ -275,13 +269,31 @@ def parse_po(text):
         if "semua varian" in clean_name.lower():
             found_collection = False
             check_str = f"{curr_cat} {clean_name}".lower()
+            
+            # --- PERBAIKAN LOGIKA DISINI ---
+            # Cek apakah baris ini SENDIRI mengandung nama kategori?
+            # Jika baris ini ada kata "peeling gel", maka pakai "peeling gel" sbg kategori
+            # abaikan curr_cat (powder mask) yang lama.
+            
+            effective_cat = curr_cat # Default pakai kategori induk
+            
             for key, variants in AUTO_VARIANTS.items():
-                if key in check_str:
+                # Cek prioritas: Apakah kategori ada di baris ini?
+                if key in clean_name.lower():
+                    effective_cat = key # Override kategori induk!
+                    # Lanjut expand
                     for v in variants:
-                        query = f"{curr_brand} {curr_cat} {v}".strip()
-                        expand_list.append(query)
+                        expand_list.append(f"{curr_brand} {effective_cat} {v}".strip())
                     found_collection = True
                     break
+                
+                # Jika tidak ada di baris ini, cek gabungan dengan induk
+                elif key in check_str:
+                    for v in variants:
+                        expand_list.append(f"{curr_brand} {key} {v}".strip())
+                    found_collection = True
+                    break
+            
             if not found_collection:
                 expand_list.append(f"{curr_brand} {curr_cat} {clean_name}")
         else:
