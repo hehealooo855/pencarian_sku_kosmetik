@@ -7,9 +7,9 @@ import re
 # ==========================================
 # 0. KONFIGURASI HALAMAN
 # ==========================================
-st.set_page_config(page_title="AI Fakturis Pro", page_icon="💎", layout="wide")
-st.title("💎 AI Fakturis Pro (Smart Context)")
-st.markdown("Fitur: **Auto-Detect 'x20'/'@x6'**, **Sub-Category Logic (Powder Mask -> Tea Tree)**, **All -> Semua Varian**.")
+st.set_page_config(page_title="AI Fakturis Pro", page_icon="🧬", layout="wide")
+st.title("🧬 AI Fakturis Pro (Smart Context)")
+st.markdown("Fitur: **Regex Qty (x20, @x6)**, **Parent-Child Logic (Powder Mask -> Tea Tree)**, **All -> Semua Varian**.")
 
 # ==========================================
 # 1. KAMUS DATA & MAPPING
@@ -19,7 +19,9 @@ AUTO_VARIANTS = {
     "eye mask": ["Gold", "Osmanthus", "Seaweed", "Black Pearl"], 
     "lip mask": ["Peach", "Strawberry", "Blueberry"],
     "sheet mask": ["Aloe", "Pomegranate", "Honey", "Olive", "Blueberry"],
-    "powder mask": ["Greentea", "Lavender", "Peppermint", "Strawberry"],
+    "powder mask": ["Greentea", "Lavender", "Peppermint", "Strawberry", "Tea Tree"], # Tambah Tea Tree
+    "peeling gel": ["Aloe", "Charcoal", "Milk", "Snail"], # Tambah Varian Peeling
+    "toner badan": ["Red Jelly", "Coklat", "Fresh Skin"], # Tambah Varian Toner
 }
 
 BRAND_ALIASES = {
@@ -50,7 +52,7 @@ KEYWORD_REPLACEMENTS = {
     "50g": "50gr", "50gram": "50gr",
     
     # 4. Fix Sales "Inggris-inggrisan"
-    "all": "semua varian"
+    "all": "semua varian", "@": ""
 }
 
 CONFLICT_MAP = {
@@ -137,6 +139,7 @@ def extract_numbers_robust(text):
 def search_sku(query, brand_filter=None):
     if not query or len(query) < 2: return None, 0.0, "", ""
 
+    # Cleaning + Unit Splitter (50g -> 50 g)
     query_clean = re.sub(r'(\d+)([a-zA-Z]+)', r'\1 \2', query.lower())
     query_clean = re.sub(r'[^a-z0-9\s]', ' ', query_clean)
     
