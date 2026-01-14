@@ -18,7 +18,7 @@ st.markdown("""
 """)
 
 # --- PENTING: TEMPEL KUNCI BARU ANDA DI SINI ---
-API_KEY_RAHASIA = "AIzaSyD5Oz4FQo4o0lpj6PvcUYHYZp7XDVJa-qc" 
+API_KEY_RAHASIA = "AIzaSyBRCb7tZE_9etCicL4Td3nlb5cg9wzVgVs" 
 
 # ==========================================
 # 2. LOAD DATABASE
