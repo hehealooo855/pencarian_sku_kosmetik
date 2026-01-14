@@ -11,10 +11,10 @@ import io
 # 1. KONFIGURASI HALAMAN
 # ==========================================
 st.set_page_config(page_title="AI Fakturis Ultimate", page_icon="💎", layout="wide")
-st.title("💎 AI Fakturis Pro (Final Version)")
+st.title("💎 AI Fakturis Pro (Auto-Detect Model)")
 st.markdown("""
-**Status:** Stabil (Gemini 1.5 Flash).
-**Fitur:** Full Context Reader (Diosys/Thai/Javinci) + Singkatan Fixer.
+**Status:** Auto-Detect Model Active.
+**Fix:** Mencari model AI yang tersedia secara otomatis (Anti Error 404).
 """)
 
 # --- PENTING: TEMPEL KUNCI BARU ANDA DI SINI ---
@@ -150,13 +150,27 @@ def clean_and_parse_json(text_response):
         return []
 
 # ==========================================
-# 6. AI PROCESSOR (FIXED MODEL VERSION)
+# 6. AI PROCESSOR (AUTO DETECT MODEL)
 # ==========================================
-def process_with_ai(api_key, raw_text, context_df):
+def get_available_model(api_key):
+    """Mencari model yang tersedia di akun user secara otomatis"""
     genai.configure(api_key=api_key)
-    
-    # --- PERBAIKAN: KUNCI KE MODEL YANG VALID ---
-    model_name = "models/gemini-1.5-flash"
+    try:
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # Prioritas: Flash -> 1.5 Pro -> 1.0 Pro -> Gemini Pro
+        for m in models:
+            if 'flash' in m.lower(): return m
+        for m in models:
+            if '1.5' in m and 'pro' in m.lower(): return m
+        
+        return models[0] if models else "models/gemini-pro"
+    except:
+        return "models/gemini-pro"
+
+def process_with_ai(api_key, raw_text, context_df):
+    # Cari model yang valid dulu
+    model_name = get_available_model(api_key)
     
     # Pre-process text sebelum dikirim ke AI
     optimized_text = expand_abbreviations(raw_text)
@@ -201,13 +215,13 @@ def process_with_ai(api_key, raw_text, context_df):
         return result, model_name
 
     except Exception as e:
-        return [], str(e)
+        return [], f"{str(e)} (Model tried: {model_name})"
 
 # ==========================================
 # 7. USER INTERFACE
 # ==========================================
 with st.sidebar:
-    st.success("✅ AI Siap Digunakan")
+    st.success("✅ AI Auto-Detect Aktif")
     if st.button("Hapus Cache"):
         st.cache_data.clear()
 
@@ -222,7 +236,7 @@ with col2:
     st.subheader("📊 Hasil Analisa")
     
     if process_btn and raw_text:
-        with st.spinner("🤖 Menerjemahkan singkatan & Scan Database..."):
+        with st.spinner("🤖 Mencari Model AI & Menganalisa..."):
             
             # 1. Get Context
             smart_df = get_smart_context(raw_text, df_db)
@@ -231,7 +245,7 @@ with col2:
             ai_results, info = process_with_ai(API_KEY_RAHASIA, raw_text, smart_df)
             
             if isinstance(ai_results, list) and len(ai_results) > 0:
-                st.success(f"Sukses! (Model: {info})")
+                st.success(f"Sukses! (Model Used: {info})")
                 
                 df_res = pd.DataFrame(ai_results)
                 
