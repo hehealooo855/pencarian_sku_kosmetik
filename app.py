@@ -10,7 +10,7 @@ from difflib import SequenceMatcher
 # ==========================================
 st.set_page_config(page_title="AI Fakturis Pro", page_icon="🧬", layout="wide")
 st.title("🧬 AI Fakturis Pro (Flexi-Parser)")
-st.markdown("Fitur: **Colon Parser (:12pcs)**, **Smart Context**, **Auto-Switch Category**.")
+st.markdown("Fitur: **Colon Parser (:12pcs)**, **Category Sanitizer (Cushion)**, **Goublush Fix**.")
 
 # ==========================================
 # 1. KAMUS DATA
@@ -22,8 +22,10 @@ AUTO_VARIANTS = {
     "toner badan": ["Red Jelly", "Coklat", "Fresh Skin", "Kelupas", "Ginseng"],
     "toner": ["Rose", "Chamomile", "Aloe", "Lemon"],
     "masker wajah": ["Bengkoang", "Aloe Vera", "Cucumber", "Avocado"],
-    "cushion": ["01", "02", "03", "04", "Ivory", "Natural", "Beige"], # Tambahan untuk Goute
-    "blush": ["01", "02", "03", "04"], # Tambahan untuk Goublush
+    # Goute Variants
+    "cushion": ["01", "02", "03", "04", "Ivory", "Natural", "Beige"], 
+    "blush": ["01", "02", "03", "04"], 
+    "lip matte": ["01", "02", "03", "04", "05"],
     "yu chun mei": ["Night Cream", "Day Cream", "Cleanser", "Serum"]
 }
 
@@ -35,7 +37,6 @@ BRAND_ALIASES = {
     "implora": "IMPLORA", "brasov": "BRASOV", "tata": "JAVINCI",
     "body white": "JAVINCI", "holly": "HOLLY",
     "yu chun mei": "YU CHUN MEI", "ycm": "YU CHUN MEI",
-    # Tambahan Brand Baru dari PO Sales
     "whitelab": "WHITELAB", "bonavie": "BONAVIE", "goute": "GOUTE",
     "kim": "KIM", "kim kosmetik": "KIM"
 }
@@ -60,8 +61,9 @@ KEYWORD_REPLACEMENTS = {
     "minyak": "oil", "zaitun": "olive oil",
     "50g": "50gr", "50gram": "50gr",
     "trii": "tree", "pappermint": "peppermint",
-    # Fix Typo Bonavie
-    "creme": "cream", "canele": "canale" 
+    "creme": "cream", "canele": "canale",
+    # FIX GOUTE
+    "goublush": "blush", "goublus": "blush"
 }
 
 HARD_CONFLICTS = {
@@ -141,7 +143,7 @@ def search_hybrid(query, brand_filter=None):
     query_clean = re.sub(r'(\d+)([a-zA-Z]+)', r'\1 \2', query.lower())
     query_clean = re.sub(r'[^a-z0-9\s]', ' ', query_clean).strip()
     
-    # KEYWORD REPLACEMENT (Translator)
+    # KEYWORD REPLACEMENT
     for k, v in KEYWORD_REPLACEMENTS.items():
         if k in query_clean: 
             query_clean = query_clean.replace(k, v)
@@ -178,7 +180,6 @@ def search_hybrid(query, brand_filter=None):
         
         if num_mismatch: final_score -= 0.5 
 
-        # --- LOGIC ANTI-CLASH ---
         clash = False
         for key, enemies in HARD_CONFLICTS.items():
             if key in search_query: 
@@ -211,7 +212,7 @@ def search_hybrid(query, brand_filter=None):
         return "❌ TIDAK DITEMUKAN", 0.0, "", "-"
 
 # ==========================================
-# 4. PARSER PO (FLEXIBLE UPDATE)
+# 4. PARSER PO (FLEXIBLE + SANITIZER)
 # ==========================================
 def parse_po(text):
     lines = text.split('\n')
@@ -237,8 +238,7 @@ def parse_po(text):
         line_clean = re.sub(r'\b(cash|tunai|kredit|tempo)\b', '', line_clean, flags=re.IGNORECASE)
         line_clean = re.sub(r'[\(\)]', ' ', line_clean)
         
-        # --- FIX UTAMA: COLON PARSER (:12pcs -> x 12pcs) ---
-        # Ini mengubah "serum:12pcs" menjadi "serum x 12pcs" agar tertangkap regex monster
+        # FIX COLON (:12pcs -> x 12pcs)
         line_clean = re.sub(r':\s*(\d+)', r' x \1', line_clean)
         
         # Regex Monster
@@ -260,15 +260,15 @@ def parse_po(text):
 
         clean_name = re.sub(qty_pattern, ' ', line_clean, flags=re.IGNORECASE)
         clean_name = re.sub(r'\d+\s*[\+\*]\s*\d+', ' ', clean_name)
-        
         clean_name = re.sub(r'[^\w\s]', ' ', clean_name).strip()
+        
+        # Translate kata kunci
         words = clean_name.lower().split()
         final_words = []
         for w in words:
             final_words.append(KEYWORD_REPLACEMENTS.get(w, w))
         clean_name = " ".join(final_words)
 
-        # LOGIKA HIERARKI (Header vs Item)
         if not is_item:
             lower_name = clean_name.lower()
             detected_brand = None
@@ -288,16 +288,30 @@ def parse_po(text):
             
             if detected_brand:
                 curr_brand = detected_brand
-                curr_cat = clean_name
+                
+                # --- FIX CATEGORY SANITIZER (PEMBERSIH KATEGORI) ---
+                # Jika nama kategori panjang tapi mengandung kata kunci dikenal (misal "cushion"),
+                # ambil kata kuncinya saja agar query bersih.
+                sanitized_cat = clean_name
+                for key in AUTO_VARIANTS.keys():
+                    if key in clean_name.lower():
+                        sanitized_cat = key
+                        break
+                
+                curr_cat = sanitized_cat
                 header_bonus = line_bonus
                 continue
             else:
-                # Jika bukan brand, berarti nama kategori (misal "Goublush" atau "Cushion")
                 if len(clean_name) > 2:
-                    curr_cat = clean_name
+                    # Terapkan juga Sanitizer untuk sub-kategori
+                    sanitized_cat = clean_name
+                    for key in AUTO_VARIANTS.keys():
+                        if key in clean_name.lower():
+                            sanitized_cat = key
+                            break
+                    curr_cat = sanitized_cat
             continue
 
-        # LOGIKA KONSTRUKSI QUERY
         expand_list = []
         if "semua varian" in clean_name.lower():
             found_collection = False
@@ -316,8 +330,6 @@ def parse_po(text):
             if not found_collection:
                 expand_list.append(f"{curr_brand} {curr_cat} {clean_name}")
         else:
-            # Gabungkan Brand + Kategori (jika ada) + Nama Item
-            # Ini menangani kasus "01:36pcs" -> "Goute Cushion 01"
             expand_list.append(f"{curr_brand} {curr_cat} {clean_name}")
 
         active_bonus = line_bonus if line_bonus else (header_bonus if header_bonus else footer_bonus)
