@@ -10,18 +10,19 @@ import io
 # ==========================================
 # 1. KONFIGURASI HALAMAN
 # ==========================================
-st.set_page_config(page_title="AI Fakturis Anti-Error", page_icon="🛡️", layout="wide")
-st.title("🛡️ AI Fakturis Pro (Bulletproof JSON)")
+st.set_page_config(page_title="AI Fakturis Ultimate", page_icon="🚀", layout="wide")
+st.title("🚀 AI Fakturis Pro (Brand-Aware Context)")
 st.markdown("""
-**Status:** JSON Guard Activated.
-**Teknologi:** TF-IDF Filter + Gemini AI + Regex Cleaner.
+**Status:** Smart Filter Activated.
+**Teknologi:** Brand Detection + Gemini 1.5 Flash.
+**Kemampuan:** Membaca PO panjang dengan banyak varian warna (Diosys, Goute, dll).
 """)
 
 # --- API KEY ---
 API_KEY_RAHASIA = "AIzaSyCHDgY3z-OMdRdXuvb1aNj7vKpJWqZU2O0"
 
 # ==========================================
-# 2. LOAD DATABASE & TRAIN FILTER
+# 2. LOAD DATABASE & PREP
 # ==========================================
 @st.cache_data(ttl=3600)
 def load_data():
@@ -49,6 +50,7 @@ def load_data():
         df = df.rename(columns={col_map['kode']: 'Kode', col_map['nama']: 'Nama', col_map['merk']: 'Merk'})
         df = df[['Kode', 'Nama', 'Merk']].dropna(subset=['Nama'])
         
+        # Kolom bantu pencarian
         df['Search_Key'] = df['Nama'] + " " + df['Merk']
         df['Search_Key'] = df['Search_Key'].astype(str).str.lower()
         return df
@@ -56,125 +58,148 @@ def load_data():
 
 df_db = load_data()
 
-# --- TF-IDF FILTER (PENYARING) ---
-@st.cache_resource
-def prepare_filter(df):
-    if df is None: return None, None
-    vectorizer = TfidfVectorizer(analyzer='word', ngram_range=(1, 2))
-    matrix = vectorizer.fit_transform(df['Search_Key'])
-    return vectorizer, matrix
+# ==========================================
+# 3. SMART CONTEXT GENERATOR (THE FIX)
+# ==========================================
+def get_smart_context(raw_text, df):
+    """
+    Logika Baru:
+    1. Deteksi Brand apa saja yang disebut di chat.
+    2. Ambil SEMUA produk dari brand tersebut.
+    3. Gabungkan dengan pencarian text biasa (untuk item tanpa brand).
+    """
+    text_lower = raw_text.lower()
+    
+    # 1. Ambil list semua brand unik di database
+    all_brands = df['Merk'].dropna().unique()
+    found_brands = []
+    
+    # Alias Brand (Mapping nama chat -> nama db)
+    brand_aliases = {
+        "kim": "KIM", "whitelab": "WHITELAB", "bonavie": "BONAVIE", 
+        "goute": "GOUTE", "syb": "SYB", "yu chun mei": "YU CHUN MEI", 
+        "ycm": "YU CHUN MEI", "thai": "THAI", "javinci": "JAVINCI",
+        "diosys": "DIOSYS", "implora": "IMPLORA", "hanasui": "HANASUI"
+    }
 
-if df_db is not None:
-    tfidf_vec, tfidf_mat = prepare_filter(df_db)
+    # Cek Brand di Chat
+    for brand in all_brands:
+        if str(brand).lower() in text_lower:
+            found_brands.append(brand)
+    
+    for alias, real in brand_aliases.items():
+        if alias in text_lower and real not in found_brands:
+            found_brands.append(real)
+
+    # 2. Filter Database berdasarkan Brand
+    if found_brands:
+        # Ambil semua item dari brand yang terdeteksi (Anti-Filter Bubble)
+        brand_df = df[df['Merk'].isin(found_brands)]
+        
+        # Jika hasilnya terlalu sedikit (< 50), tambahkan pencarian text biasa sebagai backup
+        if len(brand_df) < 50:
+            # Fallback TF-IDF simple
+            vectorizer = TfidfVectorizer(analyzer='word', ngram_range=(1, 2))
+            matrix = vectorizer.fit_transform(df['Search_Key'])
+            clean_chat = re.sub(r'[^a-zA-Z0-9\s]', ' ', text_lower)
+            query_vec = vectorizer.transform([clean_chat])
+            scores = cosine_similarity(query_vec, matrix).flatten()
+            top_indices = scores.argsort()[-50:][::-1]
+            text_df = df.iloc[top_indices]
+            
+            # Gabungkan dan Hapus Duplikat
+            final_df = pd.concat([brand_df, text_df]).drop_duplicates(subset=['Kode'])
+            return final_df
+        else:
+            return brand_df
+    else:
+        # Jika tidak ada brand terdeteksi, pakai cara lama (TF-IDF Top 100)
+        vectorizer = TfidfVectorizer(analyzer='word', ngram_range=(1, 2))
+        matrix = vectorizer.fit_transform(df['Search_Key'])
+        clean_chat = re.sub(r'[^a-zA-Z0-9\s]', ' ', text_lower)
+        query_vec = vectorizer.transform([clean_chat])
+        scores = cosine_similarity(query_vec, matrix).flatten()
+        top_indices = scores.argsort()[-100:][::-1] # Ambil lebih banyak
+        return df.iloc[top_indices]
 
 # ==========================================
-# 3. FUNGSI PEMBERSIH (THE FIXER)
+# 4. JSON PARSER (ANTI-ERROR)
 # ==========================================
 def clean_and_parse_json(text_response):
-    """
-    Fungsi sakti untuk memperbaiki JSON yang rusak atau kotor.
-    """
     try:
-        # 1. Hapus Markdown Code Block (```json ... ```)
         text = text_response.replace("```json", "").replace("```", "")
-        
-        # 2. Bracket Hunter: Cari [ pertama dan ] terakhir
-        # Ini membuang teks intro seperti "Berikut adalah hasilnya:"
         start_idx = text.find('[')
         end_idx = text.rfind(']')
         
         if start_idx != -1 and end_idx != -1:
             text = text[start_idx : end_idx + 1]
-        else:
-            # Jika tidak ada kurung siku, mungkin AI cuma kasih satu objek {}
-            # Kita bungkus jadi list
-            if text.strip().startswith('{'):
-                text = f"[{text}]"
+        elif text.strip().startswith('{'):
+            text = f"[{text}]"
         
-        # 3. Parsing
         return json.loads(text)
-        
-    except json.JSONDecodeError as e:
-        # Jika masih error, return pesan error spesifik tapi jangan crash
-        print(f"JSON Error: {e}")
+    except json.JSONDecodeError:
         return []
 
-def get_optimized_context(raw_text, df, vectorizer, matrix):
-    # Bersihkan chat sales
-    clean_chat = re.sub(r'[^a-zA-Z0-9\s]', ' ', raw_text.lower())
-    query_vec = vectorizer.transform([clean_chat])
-    scores = cosine_similarity(query_vec, matrix).flatten()
-    
-    # Ambil 50 kandidat teratas (Hemat Token!)
-    top_indices = scores.argsort()[-50:][::-1]
-    return df.iloc[top_indices]
-
 # ==========================================
-# 4. AI ENGINE (GEMINI)
+# 5. AI ENGINE (GEMINI)
 # ==========================================
 def process_with_ai(api_key, raw_text, context_df):
     genai.configure(api_key=api_key)
     
-    # Gunakan gemini-1.5-flash karena lebih cepat & murah.
-    # Jika kuota habis, dia akan error di awal, bukan di parsing.
+    # Gunakan 1.5 Flash karena context windownya besar (1 Juta Token)
+    # Sangat cocok untuk menampung seluruh produk Diosys/Thai/Javinci sekaligus.
     model_name = "models/gemini-1.5-flash"
     
     generation_config = {
         "temperature": 0.1,
-        "max_output_tokens": 4096,
-        # Kita paksa output JSON mode (Fitur baru Gemini)
-        "response_mime_type": "application/json" 
+        "max_output_tokens": 8192, # Output panjang untuk PO panjang
+        "response_mime_type": "application/json"
     }
     
     try:
         model = genai.GenerativeModel(model_name=model_name, generation_config=generation_config)
         
+        # Kirim HANYA kolom penting
         csv_context = context_df[['Kode', 'Nama', 'Merk']].to_csv(index=False)
 
         prompt = f"""
         Role: Expert Data Entry.
         Task: Extract items from INPUT CHAT based on CANDIDATE LIST.
         
-        CANDIDATE LIST:
+        CANDIDATE LIST (Database):
         {csv_context}
         
         INPUT CHAT:
         {raw_text}
         
-        RULES:
-        1. Context Awareness: "Goute Cushion" followed by line "01:12pcs" means "Goute Cushion 01".
-        2. Quantity: ":12pcs", "x12", "12 pcs" -> qty_input: 12.
-        3. Typo Fix: Map "Trii" to "Tree", "Creme" to "Cream".
-        4. If item is NOT in CANDIDATE LIST, do NOT invent data. Ignore it.
+        RULES (CRITICAL):
+        1. Context Hierarchy: 
+           - Header "Diosys 100ml" applies to lines below it (N.black, Red wine, etc) -> "Diosys 100ml Natural Black".
+           - Header "Javinci" applies to "Aha gluta...".
+        2. Quantity & Bonus: 
+           - "12pcs (12+1)" -> Qty: 12, Bonus: 1 (Total fisik 13, tapi input qty utama 12).
+           - "banded 12pcs" -> Qty 12.
+        3. Typo Fix: "Cerry" -> "Cherry", "Zaitun" -> "Olive".
+        4. Match EXACTLY with Database Names.
         
-        Return strictly a JSON Array like this:
+        OUTPUT JSON Format:
         [
-            {{"kode": "CODE_FROM_DB", "nama_barang": "NAME_FROM_DB", "qty_input": "12", "keterangan": "Bonus info"}}
+            {{"kode": "DB_CODE", "nama_barang": "DB_NAME", "qty_input": "12", "keterangan": "Bonus 1 / Banded"}}
         ]
         """
         
         response = model.generate_content(prompt)
-        
-        # Panggil Fungsi Pembersih Sakti
         result = clean_and_parse_json(response.text)
         return result, model_name
 
     except Exception as e:
-        # Fallback ke Gemini Pro jika Flash error
-        try:
-            fallback_model = "models/gemini-pro"
-            model = genai.GenerativeModel(fallback_model)
-            response = model.generate_content(prompt) # Prompt sama
-            result = clean_and_parse_json(response.text)
-            return result, fallback_model
-        except Exception as e2:
-            return [], f"Error: {str(e)} | Fallback Error: {str(e2)}"
+        return [], str(e)
 
 # ==========================================
-# 5. USER INTERFACE
+# 6. USER INTERFACE
 # ==========================================
 with st.sidebar:
-    st.success("✅ Anti-Error System ON")
+    st.success("✅ Brand-Aware AI Aktif")
     if st.button("Hapus Cache"):
         st.cache_data.clear()
 
@@ -183,59 +208,53 @@ col1, col2 = st.columns([1, 1.5])
 with col1:
     st.subheader("📝 Input PO")
     raw_text = st.text_area("Paste Chat Sales:", height=450)
-    process_btn = st.button("🚀 PROSES (SAFE MODE)", type="primary", use_container_width=True)
+    process_btn = st.button("🚀 PROSES (ULTIMATE)", type="primary", use_container_width=True)
 
 with col2:
     st.subheader("📊 Hasil Analisa")
     
     if process_btn and raw_text:
-        with st.spinner("🔍 Menyaring & Memperbaiki Struktur Data..."):
-            # 1. Filter Database
-            optimized_df = get_optimized_context(raw_text, df_db, tfidf_vec, tfidf_mat)
+        with st.spinner("🤖 Mengumpulkan data Brand & Analisa AI..."):
+            # 1. Ambil Context Pintar
+            smart_df = get_smart_context(raw_text, df_db)
             
-            # 2. Proses AI dengan Pembersih JSON
-            ai_results, model_used = process_with_ai(API_KEY_RAHASIA, raw_text, optimized_df)
+            # Debugging (Opsional: Cek apakah item Diosys terbawa)
+            # st.write(f"Kandidat ditemukan: {len(smart_df)} item")
+            
+            # 2. Proses AI
+            ai_results, info = process_with_ai(API_KEY_RAHASIA, raw_text, smart_df)
             
             if isinstance(ai_results, list) and len(ai_results) > 0:
-                st.success(f"Berhasil! (Model: {model_used})")
+                st.success("Analisa Selesai!")
                 
                 df_res = pd.DataFrame(ai_results)
                 
-                # Normalisasi Kolom (Jaga-jaga AI pakai huruf besar/kecil)
+                # Normalisasi Header
                 df_res.columns = [x.lower() for x in df_res.columns]
-                # Mapping ke nama yang bagus
-                rename_map = {
-                    "kode": "Kode", "nama_barang": "Nama Barang", 
-                    "qty_input": "Qty", "keterangan": "Ket",
-                    "nama": "Nama Barang" # Jaga-jaga AI halusinasi nama kolom
-                }
+                rename_map = {"kode": "Kode", "nama_barang": "Nama Barang", "qty_input": "Qty", "keterangan": "Ket"}
                 df_res = df_res.rename(columns=rename_map)
                 
-                # Pastikan kolom ada
-                cols_to_show = ["Kode", "Nama Barang", "Qty"]
-                if "Ket" in df_res.columns: cols_to_show.append("Ket")
-                
-                # Tampilkan hanya kolom yang valid
-                valid_cols = [c for c in cols_to_show if c in df_res.columns]
+                # Tampilkan
+                cols = ["Kode", "Nama Barang", "Qty", "Ket"]
+                valid_cols = [c for c in cols if c in df_res.columns]
                 st.dataframe(df_res[valid_cols], hide_index=True, use_container_width=True)
                 
-                # Text Area Copy
+                # Copy Text
                 txt_out = f"Customer: {raw_text.splitlines()[0]}\n"
                 for _, row in df_res.iterrows():
                     q = row.get('Qty', '1')
-                    n = row.get('Nama Barang', 'Unknown')
                     k = row.get('Kode', '-')
-                    ket = f"({row.get('Ket', '')})" if row.get('Ket') else ""
-                    txt_out += f"{k} | {n} | {q} {ket}\n"
+                    n = row.get('Nama Barang', 'Unknown')
+                    bonus = f"({row.get('Ket')})" if row.get('Ket') else ""
+                    txt_out += f"{k} | {n} | {q} {bonus}\n"
                 st.text_area("Copy Hasil:", value=txt_out, height=200)
                 
-                # Download Excel
+                # Download
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                     df_res.to_excel(writer, index=False, sheet_name='PO')
-                st.download_button("📥 Download Excel", data=buffer.getvalue(), file_name="PO_Fixed.xlsx", mime="application/vnd.ms-excel")
+                st.download_button("📥 Download Excel", data=buffer.getvalue(), file_name="PO_Ultimate.xlsx", mime="application/vnd.ms-excel")
                 
             else:
-                st.warning("AI tidak menemukan item yang cocok, atau format respon tidak terbaca.")
-                if isinstance(ai_results, str):
-                    st.error(f"Detail Error: {ai_results}")
+                st.error("Gagal membaca respon AI.")
+                st.write("Raw Info:", info)
