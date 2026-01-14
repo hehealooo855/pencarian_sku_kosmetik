@@ -10,14 +10,14 @@ import io
 # ==========================================
 # 1. KONFIGURASI HALAMAN
 # ==========================================
-st.set_page_config(page_title="AI Fakturis Hemat", page_icon="🍃", layout="wide")
-st.title("🍃 AI Fakturis Pro (Smart Token Saving)")
+st.set_page_config(page_title="AI Fakturis Anti-Error", page_icon="🛡️", layout="wide")
+st.title("🛡️ AI Fakturis Pro (Bulletproof JSON)")
 st.markdown("""
-**Status:** Token Saver Activated.
-**Cara Kerja:** Mencari kandidat relevan dulu (TF-IDF), baru dikirim ke AI (Gemini). **Anti Jebol Kuota.**
+**Status:** JSON Guard Activated.
+**Teknologi:** TF-IDF Filter + Gemini AI + Regex Cleaner.
 """)
 
-# --- API KEY DITANAM ---
+# --- API KEY ---
 API_KEY_RAHASIA = "AIzaSyCHDgY3z-OMdRdXuvb1aNj7vKpJWqZU2O0"
 
 # ==========================================
@@ -49,7 +49,6 @@ def load_data():
         df = df.rename(columns={col_map['kode']: 'Kode', col_map['nama']: 'Nama', col_map['merk']: 'Merk'})
         df = df[['Kode', 'Nama', 'Merk']].dropna(subset=['Nama'])
         
-        # Cleaning untuk Filter
         df['Search_Key'] = df['Nama'] + " " + df['Merk']
         df['Search_Key'] = df['Search_Key'].astype(str).str.lower()
         return df
@@ -57,7 +56,7 @@ def load_data():
 
 df_db = load_data()
 
-# --- SIAPKAN PENYARING (TF-IDF) ---
+# --- TF-IDF FILTER (PENYARING) ---
 @st.cache_resource
 def prepare_filter(df):
     if df is None: return None, None
@@ -69,93 +68,113 @@ if df_db is not None:
     tfidf_vec, tfidf_mat = prepare_filter(df_db)
 
 # ==========================================
-# 3. SMART CONTEXT (PENYARING)
+# 3. FUNGSI PEMBERSIH (THE FIXER)
 # ==========================================
+def clean_and_parse_json(text_response):
+    """
+    Fungsi sakti untuk memperbaiki JSON yang rusak atau kotor.
+    """
+    try:
+        # 1. Hapus Markdown Code Block (```json ... ```)
+        text = text_response.replace("```json", "").replace("```", "")
+        
+        # 2. Bracket Hunter: Cari [ pertama dan ] terakhir
+        # Ini membuang teks intro seperti "Berikut adalah hasilnya:"
+        start_idx = text.find('[')
+        end_idx = text.rfind(']')
+        
+        if start_idx != -1 and end_idx != -1:
+            text = text[start_idx : end_idx + 1]
+        else:
+            # Jika tidak ada kurung siku, mungkin AI cuma kasih satu objek {}
+            # Kita bungkus jadi list
+            if text.strip().startswith('{'):
+                text = f"[{text}]"
+        
+        # 3. Parsing
+        return json.loads(text)
+        
+    except json.JSONDecodeError as e:
+        # Jika masih error, return pesan error spesifik tapi jangan crash
+        print(f"JSON Error: {e}")
+        return []
+
 def get_optimized_context(raw_text, df, vectorizer, matrix):
-    """
-    Fungsi ini menyaring database. Dari ribuan barang, 
-    kita hanya ambil 60 barang yang paling mungkin dimaksud.
-    Supaya AI tidak 'kekenyangan' data.
-    """
-    # Bersihkan chat sales jadi keywords
+    # Bersihkan chat sales
     clean_chat = re.sub(r'[^a-zA-Z0-9\s]', ' ', raw_text.lower())
-    
-    # Hitung kemiripan
     query_vec = vectorizer.transform([clean_chat])
     scores = cosine_similarity(query_vec, matrix).flatten()
     
-    # Ambil 60 kandidat teratas (Top-K)
-    # Angka 60 ini cukup untuk memberi konteks, tapi sangat hemat token.
-    top_indices = scores.argsort()[-60:][::-1]
-    
-    # Kembalikan DataFrame kecil
+    # Ambil 50 kandidat teratas (Hemat Token!)
+    top_indices = scores.argsort()[-50:][::-1]
     return df.iloc[top_indices]
 
 # ==========================================
 # 4. AI ENGINE (GEMINI)
 # ==========================================
-def find_best_model():
-    # Urutan prioritas model hemat & cepat
-    candidates = ["models/gemini-1.5-flash", "models/gemini-pro"]
-    try:
-        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        for c in candidates:
-            if c in models: return c
-        return models[0] if models else "models/gemini-pro"
-    except:
-        return "models/gemini-pro"
-
 def process_with_ai(api_key, raw_text, context_df):
     genai.configure(api_key=api_key)
-    model_name = find_best_model()
+    
+    # Gunakan gemini-1.5-flash karena lebih cepat & murah.
+    # Jika kuota habis, dia akan error di awal, bukan di parsing.
+    model_name = "models/gemini-1.5-flash"
     
     generation_config = {
-        "temperature": 0.1, # Sangat logis/kaku
+        "temperature": 0.1,
         "max_output_tokens": 4096,
+        # Kita paksa output JSON mode (Fitur baru Gemini)
+        "response_mime_type": "application/json" 
     }
     
     try:
         model = genai.GenerativeModel(model_name=model_name, generation_config=generation_config)
         
-        # Ubah Dataframe Kecil ke CSV String
         csv_context = context_df[['Kode', 'Nama', 'Merk']].to_csv(index=False)
 
         prompt = f"""
-        Peran: Kamu adalah Admin Input Order (Fakturis).
+        Role: Expert Data Entry.
+        Task: Extract items from INPUT CHAT based on CANDIDATE LIST.
         
-        Tugas: 
-        Baca "INPUT CHAT" dan cari item yang sesuai di "KANDIDAT PRODUK".
-        
-        KANDIDAT PRODUK (Pilih dari sini saja):
+        CANDIDATE LIST:
         {csv_context}
         
         INPUT CHAT:
         {raw_text}
         
-        ATURAN LOGIKA:
-        1. Context: Jika ada header "Goute Cushion", baris bawahnya "01:12pcs" berarti "Goute Cushion 01".
-        2. Qty: ":12pcs" atau "x12" adalah jumlah.
-        3. Typo: "Trii" -> "Tree", "Creme" -> "Cream".
-        4. JANGAN HALUSINASI. Jika produk tidak ada di Kandidat, jangan dipaksa.
+        RULES:
+        1. Context Awareness: "Goute Cushion" followed by line "01:12pcs" means "Goute Cushion 01".
+        2. Quantity: ":12pcs", "x12", "12 pcs" -> qty_input: 12.
+        3. Typo Fix: Map "Trii" to "Tree", "Creme" to "Cream".
+        4. If item is NOT in CANDIDATE LIST, do NOT invent data. Ignore it.
         
-        OUTPUT (Hanya JSON Array):
+        Return strictly a JSON Array like this:
         [
-            {{"kode": "KODE_DB", "nama_barang": "NAMA_DB", "qty_input": "12", "keterangan": "..."}}
+            {{"kode": "CODE_FROM_DB", "nama_barang": "NAME_FROM_DB", "qty_input": "12", "keterangan": "Bonus info"}}
         ]
         """
         
         response = model.generate_content(prompt)
-        clean_json = response.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(clean_json), model_name
+        
+        # Panggil Fungsi Pembersih Sakti
+        result = clean_and_parse_json(response.text)
+        return result, model_name
 
     except Exception as e:
-        return [], str(e)
+        # Fallback ke Gemini Pro jika Flash error
+        try:
+            fallback_model = "models/gemini-pro"
+            model = genai.GenerativeModel(fallback_model)
+            response = model.generate_content(prompt) # Prompt sama
+            result = clean_and_parse_json(response.text)
+            return result, fallback_model
+        except Exception as e2:
+            return [], f"Error: {str(e)} | Fallback Error: {str(e2)}"
 
 # ==========================================
 # 5. USER INTERFACE
 # ==========================================
 with st.sidebar:
-    st.success("✅ Sistem Hemat Token Aktif")
+    st.success("✅ Anti-Error System ON")
     if st.button("Hapus Cache"):
         st.cache_data.clear()
 
@@ -164,42 +183,59 @@ col1, col2 = st.columns([1, 1.5])
 with col1:
     st.subheader("📝 Input PO")
     raw_text = st.text_area("Paste Chat Sales:", height=450)
-    process_btn = st.button("🚀 PROSES (HEMAT KUOTA)", type="primary", use_container_width=True)
+    process_btn = st.button("🚀 PROSES (SAFE MODE)", type="primary", use_container_width=True)
 
 with col2:
     st.subheader("📊 Hasil Analisa")
     
     if process_btn and raw_text:
-        with st.spinner("🔍 Menyaring database & Bertanya ke AI..."):
-            # 1. SARING DATABASE (Lokal & Cepat)
+        with st.spinner("🔍 Menyaring & Memperbaiki Struktur Data..."):
+            # 1. Filter Database
             optimized_df = get_optimized_context(raw_text, df_db, tfidf_vec, tfidf_mat)
             
-            # 2. KIRIM HASIL SARINGAN KE AI (Hemat Kuota)
-            ai_results, status_msg = process_with_ai(API_KEY_RAHASIA, raw_text, optimized_df)
+            # 2. Proses AI dengan Pembersih JSON
+            ai_results, model_used = process_with_ai(API_KEY_RAHASIA, raw_text, optimized_df)
             
             if isinstance(ai_results, list) and len(ai_results) > 0:
-                st.success(f"Sukses! ({status_msg})")
+                st.success(f"Berhasil! (Model: {model_used})")
                 
                 df_res = pd.DataFrame(ai_results)
                 
-                # Tampilkan
-                st.dataframe(
-                    df_res.rename(columns={"kode": "Kode", "nama_barang": "Nama Barang", "qty_input": "Qty", "keterangan": "Ket"}), 
-                    hide_index=True, 
-                    use_container_width=True
-                )
+                # Normalisasi Kolom (Jaga-jaga AI pakai huruf besar/kecil)
+                df_res.columns = [x.lower() for x in df_res.columns]
+                # Mapping ke nama yang bagus
+                rename_map = {
+                    "kode": "Kode", "nama_barang": "Nama Barang", 
+                    "qty_input": "Qty", "keterangan": "Ket",
+                    "nama": "Nama Barang" # Jaga-jaga AI halusinasi nama kolom
+                }
+                df_res = df_res.rename(columns=rename_map)
                 
-                # Copy Text
+                # Pastikan kolom ada
+                cols_to_show = ["Kode", "Nama Barang", "Qty"]
+                if "Ket" in df_res.columns: cols_to_show.append("Ket")
+                
+                # Tampilkan hanya kolom yang valid
+                valid_cols = [c for c in cols_to_show if c in df_res.columns]
+                st.dataframe(df_res[valid_cols], hide_index=True, use_container_width=True)
+                
+                # Text Area Copy
                 txt_out = f"Customer: {raw_text.splitlines()[0]}\n"
                 for _, row in df_res.iterrows():
-                    txt_out += f"{row['kode']} | {row['nama_barang']} | {row['qty_input']}\n"
+                    q = row.get('Qty', '1')
+                    n = row.get('Nama Barang', 'Unknown')
+                    k = row.get('Kode', '-')
+                    ket = f"({row.get('Ket', '')})" if row.get('Ket') else ""
+                    txt_out += f"{k} | {n} | {q} {ket}\n"
                 st.text_area("Copy Hasil:", value=txt_out, height=200)
                 
                 # Download Excel
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                     df_res.to_excel(writer, index=False, sheet_name='PO')
-                st.download_button("📥 Download Excel", data=buffer.getvalue(), file_name="PO_Result.xlsx", mime="application/vnd.ms-excel")
+                st.download_button("📥 Download Excel", data=buffer.getvalue(), file_name="PO_Fixed.xlsx", mime="application/vnd.ms-excel")
                 
             else:
-                st.error(f"Gagal / Tidak Ada Data. Info: {status_msg}")
+                st.warning("AI tidak menemukan item yang cocok, atau format respon tidak terbaca.")
+                if isinstance(ai_results, str):
+                    st.error(f"Detail Error: {ai_results}")
