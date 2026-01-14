@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import google.generativeai as genai
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 import json
 import re
 import io
@@ -8,18 +10,18 @@ import io
 # ==========================================
 # 1. KONFIGURASI HALAMAN
 # ==========================================
-st.set_page_config(page_title="AI Fakturis Gen-AI", page_icon="🧠", layout="wide")
-st.title("🧠 AI Fakturis Pro (Auto-Model)")
+st.set_page_config(page_title="AI Fakturis Hemat", page_icon="🍃", layout="wide")
+st.title("🍃 AI Fakturis Pro (Smart Token Saving)")
 st.markdown("""
-**Status:** API Key Terhubung.
-**Teknologi:** Google Gemini (Auto-Detect Available Model).
+**Status:** Token Saver Activated.
+**Cara Kerja:** Mencari kandidat relevan dulu (TF-IDF), baru dikirim ke AI (Gemini). **Anti Jebol Kuota.**
 """)
 
-# --- API KEY DITANAM DISINI ---
+# --- API KEY DITANAM ---
 API_KEY_RAHASIA = "AIzaSyCHDgY3z-OMdRdXuvb1aNj7vKpJWqZU2O0"
 
 # ==========================================
-# 2. LOAD DATABASE
+# 2. LOAD DATABASE & TRAIN FILTER
 # ==========================================
 @st.cache_data(ttl=3600)
 def load_data():
@@ -30,7 +32,6 @@ def load_data():
         for i, row in df_raw.iterrows():
             if any("kode barang" in str(x).lower() for x in row.tolist()):
                 header_idx = i; break
-        
         if header_idx == -1: return None
 
         df = pd.read_csv(sheet_url, header=header_idx)
@@ -47,123 +48,114 @@ def load_data():
         
         df = df.rename(columns={col_map['kode']: 'Kode', col_map['nama']: 'Nama', col_map['merk']: 'Merk'})
         df = df[['Kode', 'Nama', 'Merk']].dropna(subset=['Nama'])
-        df['Clean_Text'] = df['Nama'] + " " + df['Merk']
+        
+        # Cleaning untuk Filter
+        df['Search_Key'] = df['Nama'] + " " + df['Merk']
+        df['Search_Key'] = df['Search_Key'].astype(str).str.lower()
         return df
     except Exception as e: st.error(f"DB Error: {e}"); return None
 
 df_db = load_data()
 
-# ==========================================
-# 3. AI ENGINE (SMART SELECTOR)
-# ==========================================
-def get_relevant_products(raw_text, df):
-    text_lower = raw_text.lower()
-    found_brands = []
-    all_brands = df['Merk'].dropna().unique()
-    
-    for brand in all_brands:
-        if str(brand).lower() in text_lower:
-            found_brands.append(brand)
-    
-    aliases = {
-        "kim": "KIM", "whitelab": "WHITELAB", "bonavie": "BONAVIE", 
-        "goute": "GOUTE", "syb": "SYB", "yu chun mei": "YU CHUN MEI", 
-        "ycm": "YU CHUN MEI"
-    }
-    for alias, real in aliases.items():
-        if alias in text_lower:
-            found_brands.append(real)
-            
-    if not found_brands: return df 
-    return df[df['Merk'].isin(found_brands)]
+# --- SIAPKAN PENYARING (TF-IDF) ---
+@st.cache_resource
+def prepare_filter(df):
+    if df is None: return None, None
+    vectorizer = TfidfVectorizer(analyzer='word', ngram_range=(1, 2))
+    matrix = vectorizer.fit_transform(df['Search_Key'])
+    return vectorizer, matrix
 
+if df_db is not None:
+    tfidf_vec, tfidf_mat = prepare_filter(df_db)
+
+# ==========================================
+# 3. SMART CONTEXT (PENYARING)
+# ==========================================
+def get_optimized_context(raw_text, df, vectorizer, matrix):
+    """
+    Fungsi ini menyaring database. Dari ribuan barang, 
+    kita hanya ambil 60 barang yang paling mungkin dimaksud.
+    Supaya AI tidak 'kekenyangan' data.
+    """
+    # Bersihkan chat sales jadi keywords
+    clean_chat = re.sub(r'[^a-zA-Z0-9\s]', ' ', raw_text.lower())
+    
+    # Hitung kemiripan
+    query_vec = vectorizer.transform([clean_chat])
+    scores = cosine_similarity(query_vec, matrix).flatten()
+    
+    # Ambil 60 kandidat teratas (Top-K)
+    # Angka 60 ini cukup untuk memberi konteks, tapi sangat hemat token.
+    top_indices = scores.argsort()[-60:][::-1]
+    
+    # Kembalikan DataFrame kecil
+    return df.iloc[top_indices]
+
+# ==========================================
+# 4. AI ENGINE (GEMINI)
+# ==========================================
 def find_best_model():
-    """Fungsi ini mencari model yang tersedia di akun pengguna"""
+    # Urutan prioritas model hemat & cepat
+    candidates = ["models/gemini-1.5-flash", "models/gemini-pro"]
     try:
-        # Prioritas model dari yang terbaru ke yang lama
-        preferred_order = [
-            "models/gemini-1.5-flash",
-            "models/gemini-1.5-pro",
-            "models/gemini-1.0-pro",
-            "models/gemini-pro"
-        ]
-        
-        available_models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
-        
-        # Cek apakah model prioritas ada di list available
-        for model in preferred_order:
-            if model in available_models:
-                return model
-        
-        # Jika prioritas tidak ada, ambil apa saja yang ada (biasanya gemini-pro)
-        if available_models:
-            return available_models[0]
-            
-        return "models/gemini-pro" # Fallback terakhir
-    except Exception as e:
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        for c in candidates:
+            if c in models: return c
+        return models[0] if models else "models/gemini-pro"
+    except:
         return "models/gemini-pro"
 
-def process_with_ai(api_key, raw_text, relevant_df):
+def process_with_ai(api_key, raw_text, context_df):
     genai.configure(api_key=api_key)
-    
-    # --- AUTO DETECT MODEL ---
     model_name = find_best_model()
-    # -------------------------
     
     generation_config = {
-        "temperature": 0.1, 
-        "top_p": 0.95,
-        "top_k": 64,
-        "max_output_tokens": 8192,
+        "temperature": 0.1, # Sangat logis/kaku
+        "max_output_tokens": 4096,
     }
     
     try:
-        model = genai.GenerativeModel(
-            model_name=model_name,
-            generation_config=generation_config,
-        )
-
-        product_context = relevant_df[['Kode', 'Nama', 'Merk']].to_csv(index=False)
+        model = genai.GenerativeModel(model_name=model_name, generation_config=generation_config)
+        
+        # Ubah Dataframe Kecil ke CSV String
+        csv_context = context_df[['Kode', 'Nama', 'Merk']].to_csv(index=False)
 
         prompt = f"""
-        Peran: Kamu adalah sistem parser Purchase Order (PO).
-        Tugas: Ekstrak item dari CHAT, perbaiki typo, dan cari Kode Barangnya di DATABASE.
+        Peran: Kamu adalah Admin Input Order (Fakturis).
         
-        DATABASE PRODUK:
-        {product_context}
+        Tugas: 
+        Baca "INPUT CHAT" dan cari item yang sesuai di "KANDIDAT PRODUK".
+        
+        KANDIDAT PRODUK (Pilih dari sini saja):
+        {csv_context}
         
         INPUT CHAT:
         {raw_text}
         
-        ATURAN PENTING:
-        1. "Goute Cushion" baris bawahnya "01: 12pcs" -> Artinya "Goute Cushion 01". (Gabungkan header dengan varian).
-        2. Format ":12pcs" atau "x12" adalah jumlah (Qty).
+        ATURAN LOGIKA:
+        1. Context: Jika ada header "Goute Cushion", baris bawahnya "01:12pcs" berarti "Goute Cushion 01".
+        2. Qty: ":12pcs" atau "x12" adalah jumlah.
         3. Typo: "Trii" -> "Tree", "Creme" -> "Cream".
-        4. "All" atau "Campur" -> Jangan dipecah jika tidak yakin, ambil item yang paling umum atau beri kode "MANUAL_CHECK".
+        4. JANGAN HALUSINASI. Jika produk tidak ada di Kandidat, jangan dipaksa.
         
-        FORMAT OUTPUT (Hanya JSON Array Valid):
+        OUTPUT (Hanya JSON Array):
         [
-            {{"kode": "KODE_DARI_DB", "nama_barang": "NAMA_DARI_DB", "qty_input": "12", "keterangan": "..."}}
+            {{"kode": "KODE_DB", "nama_barang": "NAMA_DB", "qty_input": "12", "keterangan": "..."}}
         ]
         """
-
-        response = model.generate_content(prompt)
         
+        response = model.generate_content(prompt)
         clean_json = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(clean_json), model_name
 
     except Exception as e:
-        st.error(f"AI Error ({model_name}): {e}")
-        return [], model_name
+        return [], str(e)
 
 # ==========================================
-# 4. USER INTERFACE
+# 5. USER INTERFACE
 # ==========================================
 with st.sidebar:
-    st.success("✅ API Key Terhubung")
+    st.success("✅ Sistem Hemat Token Aktif")
     if st.button("Hapus Cache"):
         st.cache_data.clear()
 
@@ -171,53 +163,43 @@ col1, col2 = st.columns([1, 1.5])
 
 with col1:
     st.subheader("📝 Input PO")
-    raw_text = st.text_area("Paste Chat Sales:", height=450, placeholder="Kim kosmetik\nWhitelab\nSerum:12pcs...")
-    
-    process_btn = st.button("🚀 PROSES DENGAN AI", type="primary", use_container_width=True)
+    raw_text = st.text_area("Paste Chat Sales:", height=450)
+    process_btn = st.button("🚀 PROSES (HEMAT KUOTA)", type="primary", use_container_width=True)
 
 with col2:
-    st.subheader("📊 Hasil Analisa AI")
+    st.subheader("📊 Hasil Analisa")
     
-    if process_btn:
-        if not raw_text:
-            st.warning("⚠️ Teks input kosong.")
-        else:
-            with st.spinner("🤖 AI Sedang Mencari Model & Menganalisa..."):
-                relevant_df = get_relevant_products(raw_text, df_db)
-                ai_results, used_model = process_with_ai(API_KEY_RAHASIA, raw_text, relevant_df)
+    if process_btn and raw_text:
+        with st.spinner("🔍 Menyaring database & Bertanya ke AI..."):
+            # 1. SARING DATABASE (Lokal & Cepat)
+            optimized_df = get_optimized_context(raw_text, df_db, tfidf_vec, tfidf_mat)
+            
+            # 2. KIRIM HASIL SARINGAN KE AI (Hemat Kuota)
+            ai_results, status_msg = process_with_ai(API_KEY_RAHASIA, raw_text, optimized_df)
+            
+            if isinstance(ai_results, list) and len(ai_results) > 0:
+                st.success(f"Sukses! ({status_msg})")
                 
-                if ai_results:
-                    st.success(f"Sukses! Menggunakan Model: `{used_model}`")
-                    df_res = pd.DataFrame(ai_results)
-                    
-                    df_display = df_res.rename(columns={
-                        "kode": "Kode", 
-                        "nama_barang": "Nama Barang", 
-                        "qty_input": "Qty",
-                        "keterangan": "Ket"
-                    })
-                    
-                    st.dataframe(df_display, hide_index=True, use_container_width=True)
-                    
-                    txt_output = ""
-                    first_line = raw_text.split('\n')[0]
-                    txt_output += f"Customer: {first_line}\n"
-                    
-                    for _, row in df_display.iterrows():
-                        ket = f"({row['Ket']})" if row['Ket'] else ""
-                        txt_output += f"{row['Kode']} | {row['Nama Barang']} | {row['Qty']} {ket}\n"
-                    
-                    st.text_area("Siap Copy:", value=txt_output, height=200)
-                    
-                    buffer = io.BytesIO()
-                    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                        df_display.to_excel(writer, index=False, sheet_name='PO')
-                    
-                    st.download_button(
-                        label="📥 Download Excel",
-                        data=buffer.getvalue(),
-                        file_name="PO_AI_Result.xlsx",
-                        mime="application/vnd.ms-excel"
-                    )
-                else:
-                    st.error("Gagal mendapatkan hasil. Cek log error di atas.")
+                df_res = pd.DataFrame(ai_results)
+                
+                # Tampilkan
+                st.dataframe(
+                    df_res.rename(columns={"kode": "Kode", "nama_barang": "Nama Barang", "qty_input": "Qty", "keterangan": "Ket"}), 
+                    hide_index=True, 
+                    use_container_width=True
+                )
+                
+                # Copy Text
+                txt_out = f"Customer: {raw_text.splitlines()[0]}\n"
+                for _, row in df_res.iterrows():
+                    txt_out += f"{row['kode']} | {row['nama_barang']} | {row['qty_input']}\n"
+                st.text_area("Copy Hasil:", value=txt_out, height=200)
+                
+                # Download Excel
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                    df_res.to_excel(writer, index=False, sheet_name='PO')
+                st.download_button("📥 Download Excel", data=buffer.getvalue(), file_name="PO_Result.xlsx", mime="application/vnd.ms-excel")
+                
+            else:
+                st.error(f"Gagal / Tidak Ada Data. Info: {status_msg}")
