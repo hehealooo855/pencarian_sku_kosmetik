@@ -11,10 +11,10 @@ import io
 # 1. KONFIGURASI HALAMAN
 # ==========================================
 st.set_page_config(page_title="AI Fakturis Ultimate", page_icon="💎", layout="wide")
-st.title("💎 AI Fakturis Pro (Hierarchical Context)")
+st.title("💎 AI Fakturis Pro (Full Coverage)")
 st.markdown("""
-**Status:** AI Hierarki Aktif.
-**Fitur Baru:** Membaca "Induk Brand" untuk varian di bawahnya (Solusi Diosys).
+**Status:** Abbreviation Expander Active.
+**Fix:** Membaca singkatan warna (N.black, D.brown) & mencegah skip item.
 """)
 
 # --- API KEY ---
@@ -58,10 +58,39 @@ def load_data():
 df_db = load_data()
 
 # ==========================================
-# 3. SMART CONTEXT GENERATOR
+# 3. TEXT PRE-PROCESSOR (KAMUS SINGKATAN)
+# ==========================================
+def expand_abbreviations(text):
+    """
+    Mengubah singkatan sales menjadi nama lengkap agar AI paham.
+    Contoh: 'N.black' -> 'Natural Black'
+    """
+    replacements = {
+        r"\bn\.black": "Natural Black",
+        r"\bd\.brown": "Dark Brown",
+        r"\bl\.blonde": "Light Blonde",
+        r"\bg\.blonde": "Golden Blonde",
+        r"\bbl\b": "Bleaching",
+        r"\bcerry": "Cherry",
+        r"\bblue bl": "Blue Bleaching",
+        r"\bash": "Ash Grey",
+        # Fix Brand typos
+        r"tiga kenza": "Tiga Kenza", 
+    }
+    
+    text_lower = text.lower()
+    for pattern, replacement in replacements.items():
+        text_lower = re.sub(pattern, replacement.lower(), text_lower)
+    
+    return text_lower
+
+# ==========================================
+# 4. SMART CONTEXT GENERATOR
 # ==========================================
 def get_smart_context(raw_text, df):
-    text_lower = raw_text.lower()
+    # Bersihkan teks dulu dengan Pre-Processor
+    clean_text = expand_abbreviations(raw_text)
+    
     all_brands = df['Merk'].dropna().unique()
     found_brands = []
     
@@ -74,20 +103,22 @@ def get_smart_context(raw_text, df):
 
     # Cek Brand
     for brand in all_brands:
-        if str(brand).lower() in text_lower:
+        if str(brand).lower() in clean_text:
             found_brands.append(brand)
     
     for alias, real in brand_aliases.items():
-        if alias in text_lower and real not in found_brands:
+        if alias in clean_text and real not in found_brands:
             found_brands.append(real)
 
     if found_brands:
+        # Ambil SEMUA item dari brand yang terdeteksi
         brand_df = df[df['Merk'].isin(found_brands)]
-        # Selalu tambahkan top 100 kemiripan teks biasa sebagai cadangan
+        
+        # Tambahkan backup TF-IDF untuk item non-brand
         vectorizer = TfidfVectorizer(analyzer='word', ngram_range=(1, 2))
         matrix = vectorizer.fit_transform(df['Search_Key'])
-        clean_chat = re.sub(r'[^a-zA-Z0-9\s]', ' ', text_lower)
-        query_vec = vectorizer.transform([clean_chat])
+        clean_search = re.sub(r'[^a-zA-Z0-9\s]', ' ', clean_text)
+        query_vec = vectorizer.transform([clean_search])
         scores = cosine_similarity(query_vec, matrix).flatten()
         top_indices = scores.argsort()[-100:][::-1]
         text_df = df.iloc[top_indices]
@@ -97,14 +128,14 @@ def get_smart_context(raw_text, df):
         # Fallback biasa
         vectorizer = TfidfVectorizer(analyzer='word', ngram_range=(1, 2))
         matrix = vectorizer.fit_transform(df['Search_Key'])
-        clean_chat = re.sub(r'[^a-zA-Z0-9\s]', ' ', text_lower)
-        query_vec = vectorizer.transform([clean_chat])
+        clean_search = re.sub(r'[^a-zA-Z0-9\s]', ' ', clean_text)
+        query_vec = vectorizer.transform([clean_search])
         scores = cosine_similarity(query_vec, matrix).flatten()
         top_indices = scores.argsort()[-100:][::-1]
         return df.iloc[top_indices]
 
 # ==========================================
-# 4. MODEL AUTO-DETECT
+# 5. MODEL AUTO-DETECT
 # ==========================================
 def find_working_model():
     try:
@@ -114,7 +145,7 @@ def find_working_model():
                 available_models.append(m.name)
         
         priority_list = [
-            "models/gemini-1.5-flash", # Terbaik untuk konteks panjang
+            "models/gemini-1.5-flash", 
             "models/gemini-1.5-pro",
             "models/gemini-1.0-pro",
             "models/gemini-pro"
@@ -127,7 +158,7 @@ def find_working_model():
         return "models/gemini-pro"
 
 # ==========================================
-# 5. AI PROCESSOR (PROMPT DIPERBAIKI)
+# 6. AI PROCESSOR
 # ==========================================
 def clean_and_parse_json(text_response):
     try:
@@ -146,8 +177,11 @@ def process_with_ai(api_key, raw_text, context_df):
     genai.configure(api_key=api_key)
     model_name = find_working_model()
     
+    # Pre-process text sebelum dikirim ke AI
+    optimized_text = expand_abbreviations(raw_text)
+    
     generation_config = {
-        "temperature": 0.1,
+        "temperature": 0.1, # Sangat logis
         "max_output_tokens": 8192,
     }
     
@@ -155,7 +189,6 @@ def process_with_ai(api_key, raw_text, context_df):
         model = genai.GenerativeModel(model_name=model_name, generation_config=generation_config)
         csv_context = context_df[['Kode', 'Nama', 'Merk']].to_csv(index=False)
 
-        # --- PROMPT RAHASIA ---
         prompt = f"""
         Role: Expert Data Entry.
         Task: Extract items from INPUT CHAT based on CANDIDATE LIST.
@@ -164,34 +197,20 @@ def process_with_ai(api_key, raw_text, context_df):
         {csv_context}
         
         INPUT CHAT:
-        {raw_text}
+        {optimized_text}
         
-        CRITICAL RULES (HIERARCHY & CONTEXT):
-        1. PARENT HEADER RULE: If a line contains a Brand Name (e.g., "Diosys"), all lines below it belong to that Brand until a new Brand appears.
-           - Example Input:
-             Diosys 100ml
-             N.black
-             D.brown
-           - Logic: "N.black" -> "Diosys Natural Black". "D.brown" -> "Diosys Dark Brown".
+        INSTRUCTIONS:
+        1. Process EVERY line. Do NOT skip any line containing quantity.
+        2. Context Hierarchy: 
+           - Header "Diosys 100ml" applies to ALL lines below it (N.black, Brown, Coffee, etc) until a new brand appears.
+           - "Brown" under "Diosys" means "Diosys Brown".
+           - "Coffee" under "Diosys" means "Diosys Coffee".
+        3. Quantity Logic: 
+           - "(24+3)" in Header means items are bundled/bonus.
+           - Line "N.black 12pcs" means Qty: 12.
+           - "12pcs (12+1)" means Qty: 12, Note: Bonus 1.
         
-        2. COLOR CODES MAPPING:
-           - "N.black" = "Natural Black"
-           - "D.brown" = "Dark Brown"
-           - "BL" = "Bleaching"
-           - "Cerry" = "Cherry"
-           - "Red wine" = "Red Wine" (Exact match)
-        
-        3. QUANTITY LOGIC:
-           - "12pcs (12+1)" -> Qty: 12, Keterangan: Bonus 1.
-           - "(24+3)" in Header -> Apply "Bonus 3" to items if they are bundled, otherwise use item's own qty.
-           - "12pcs" -> Qty: 12.
-        
-        4. OUTPUT:
-           - Must be a valid JSON Array.
-           - Map each item to the EXACT "Nama" and "Kode" from CANDIDATE LIST.
-           - If item found, set "found": true.
-        
-        JSON STRUCTURE:
+        OUTPUT JSON:
         [
             {{"kode": "DB_CODE", "nama_barang": "DB_NAME", "qty_input": "12", "keterangan": "Bonus info"}}
         ]
@@ -205,10 +224,10 @@ def process_with_ai(api_key, raw_text, context_df):
         return [], str(e)
 
 # ==========================================
-# 6. USER INTERFACE
+# 7. USER INTERFACE
 # ==========================================
 with st.sidebar:
-    st.success("✅ AI Hierarki Aktif")
+    st.success("✅ AI Full Coverage")
     if st.button("Hapus Cache"):
         st.cache_data.clear()
 
@@ -217,14 +236,20 @@ col1, col2 = st.columns([1, 1.5])
 with col1:
     st.subheader("📝 Input PO")
     raw_text = st.text_area("Paste Chat Sales:", height=450)
-    process_btn = st.button("🚀 PROSES (HIERARKI)", type="primary", use_container_width=True)
+    process_btn = st.button("🚀 PROSES (LENGKAP)", type="primary", use_container_width=True)
 
 with col2:
     st.subheader("📊 Hasil Analisa")
     
     if process_btn and raw_text:
-        with st.spinner("🤖 AI sedang membaca hierarki (Induk-Anak)..."):
+        with st.spinner("🤖 Menerjemahkan singkatan & Scan Database..."):
+            # 1. Pre-process text locally
+            clean_text_debug = expand_abbreviations(raw_text)
+            
+            # 2. Get Context
             smart_df = get_smart_context(raw_text, df_db)
+            
+            # 3. AI Process
             ai_results, info = process_with_ai(API_KEY_RAHASIA, raw_text, smart_df)
             
             if isinstance(ai_results, list) and len(ai_results) > 0:
@@ -243,7 +268,8 @@ with col2:
                 st.dataframe(df_res[valid_cols], hide_index=True, use_container_width=True)
                 
                 # Copy Text
-                txt_out = f"Customer: {raw_text.splitlines()[0]}\n"
+                first_line = raw_text.splitlines()[0]
+                txt_out = f"Customer: {first_line}\n"
                 for _, row in df_res.iterrows():
                     q = row.get('Qty', '1')
                     k = row.get('Kode', '-')
@@ -256,8 +282,8 @@ with col2:
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                     df_res.to_excel(writer, index=False, sheet_name='PO')
-                st.download_button("📥 Download Excel", data=buffer.getvalue(), file_name="PO_AI.xlsx", mime="application/vnd.ms-excel")
+                st.download_button("📥 Download Excel", data=buffer.getvalue(), file_name="PO_Full.xlsx", mime="application/vnd.ms-excel")
                 
             else:
-                st.error("Gagal.")
+                st.error("Gagal membaca respon AI.")
                 st.write("Detail Error:", info)
