@@ -18,7 +18,7 @@ st.markdown("""
 """)
 
 # --- API KEY ---
-API_KEY_RAHASIA = "AIzaSyCHDgY3z-OMdRdXuvb1aNj7vKpJWqZU2O0"
+API_KEY_RAHASIA = "AIzaSyD5Oz4FQo4o0lpj6PvcUYHYZp7XDVJa-qc"
 
 # ==========================================
 # 2. LOAD DATABASE
