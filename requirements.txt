@@ -1,6 +1,5 @@
 streamlit
 pandas
 scikit-learn
-google-generativeai
 xlsxwriter
-rapidfuzz
+google-generativeai>=0.5.0
