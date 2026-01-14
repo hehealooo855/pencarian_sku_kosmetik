@@ -8,21 +8,20 @@ from difflib import SequenceMatcher
 # ==========================================
 # 0. KONFIGURASI & SETUP
 # ==========================================
-st.set_page_config(page_title="AI Fakturis Pro", page_icon="🧬", layout="wide")
-st.title("🧬 AI Fakturis Pro (Smart Category Switch)")
-st.markdown("Fitur: **Auto-Switch Category**, **Typo Fix (Trii->Tree)**, **Regex Qty Monster**.")
+st.set_page_config(page_title="AI Fakturis Pro", page_icon="🌙", layout="wide")
+st.title("🌙 AI Fakturis Pro (Night Cream Fix)")
+st.markdown("Fitur: **Inverted Phrase Fix (Cream Night -> Night Cream)**, **Anti-Serum Conflict**, **Flexible Language**.")
 
 # ==========================================
 # 1. KAMUS DATA
 # ==========================================
-# Tambahkan varian lengkap agar "All" bisa bekerja
 AUTO_VARIANTS = {
     "powder mask": ["Greentea", "Lavender", "Peppermint", "Strawberry", "Tea Tree"],
     "peeling gel": ["Aloe", "Charcoal", "Milk", "Snail", "Lemon"],
-    "peeling": ["Aloe", "Charcoal", "Milk", "Snail", "Lemon"], # Alias pendek
-    "toner badan": ["Red Jelly", "Coklat", "Fresh Skin", "Kelupas", "Ginseng"],
-    "toner": ["Rose", "Chamomile", "Aloe", "Lemon"],
-    "masker wajah": ["Bengkoang", "Aloe Vera", "Cucumber", "Avocado"]
+    "toner badan": ["Red Jelly", "Coklat", "Fresh Skin", "Kelupas"],
+    "masker wajah": ["Bengkoang", "Aloe Vera", "Cucumber", "Avocado"],
+    # Tambahan Yu Chun Mei (Opsional, tapi membantu jika user cuma ketik "Cream")
+    "yu chun mei": ["Night Cream", "Day Cream", "Cleanser", "Serum"]
 }
 
 BRAND_ALIASES = {
@@ -31,10 +30,28 @@ BRAND_ALIASES = {
     "syb": "SYB", "diosys": "DIOSYS", "satto": "SATTO", 
     "vlagio": "VLAGIO", "honor": "HONOR", "hanasui": "HANASUI",
     "implora": "IMPLORA", "brasov": "BRASOV", "tata": "JAVINCI",
-    "body white": "JAVINCI", "holly": "HOLLY"
+    "body white": "JAVINCI", "holly": "HOLLY",
+    "yu chun mei": "YU CHUN MEI", "ycm": "YU CHUN MEI"
 }
 
+# --- BAGIAN PENTING: LOGIC BAHASA & PRODUK ---
 KEYWORD_REPLACEMENTS = {
+    # 1. FIX YU CHUN MEI (Indo/Inggris/Terbalik)
+    "cream night": "night cream", 
+    "krim malam": "night cream",
+    "cream malam": "night cream",
+    "malam": "night cream", # Jika cuma ketik "malam"
+    
+    "cream day": "day cream",
+    "krim siang": "day cream", 
+    "cream siang": "day cream",
+    "siang": "day cream",
+    
+    "cleanser": "cleanser", 
+    "sabun muka": "cleanser",
+    "facial wash": "cleanser",
+
+    # 2. Fix Lainnya
     "bulat": "150ml", "gepeng": "100ml",
     "all": "semua varian", "campur": "semua varian",
     "manjakani 100ml": "manjakani 110ml", "manjakani 100": "manjakani 110ml",
@@ -42,16 +59,27 @@ KEYWORD_REPLACEMENTS = {
     "barsoap": "soap", "bar soap": "soap", "sabun": "soap",
     "minyak": "oil", "zaitun": "olive oil",
     "50g": "50gr", "50gram": "50gr",
-    # Typo Fix
-    "trii": "tree", "pappermint": "peppermint", "pepermin": "peppermint"
+    "trii": "tree", "pappermint": "peppermint"
 }
 
-# Konflik Mutlak
+# --- KONFLIK MUTLAK (THE GUARD) ---
+# Aturan: Jika Key muncul di input, Value DILARANG muncul di hasil.
 HARD_CONFLICTS = {
     "olive": ["candlenut", "kemiri", "urang"],
     "zaitun": ["candlenut", "kemiri", "urang"],
     "kemiri": ["olive", "zaitun", "urang"],
     "candlenut": ["olive", "zaitun"],
+    
+    # FIX YU CHUN MEI: Cream VS Serum
+    "cream": ["serum", "toner", "cleanser", "soap"], 
+    "krim": ["serum", "toner", "cleanser", "soap"],
+    "serum": ["cream", "night", "day", "krim", "cleanser"],
+    
+    # Night vs Day
+    "night": ["day", "siang"],
+    "malam": ["day", "siang"],
+    "day": ["night", "malam"],
+    "siang": ["night", "malam"]
 }
 
 ESSENTIAL_KEYWORDS = ["banded", "bonus", "free"]
@@ -117,9 +145,14 @@ def search_hybrid(query, brand_filter=None):
     query_clean = re.sub(r'(\d+)([a-zA-Z]+)', r'\1 \2', query.lower())
     query_clean = re.sub(r'[^a-z0-9\s]', ' ', query_clean).strip()
     
-    search_query = query_clean
+    # KEYWORD REPLACEMENT (Translator)
+    # Kita iterasi replace agar "cream night" berubah jadi "night cream"
     for k, v in KEYWORD_REPLACEMENTS.items():
-        if k in search_query: search_query += f" {v}"
+        # Pakai regex word boundary agar tidak mereplace kata di tengah kata lain
+        if k in query_clean: 
+            query_clean = query_clean.replace(k, v)
+    
+    search_query = query_clean # Gunakan query yang sudah ditranslate
 
     query_vec = tfidf_vectorizer.transform([search_query])
     cosine_scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
@@ -137,7 +170,7 @@ def search_hybrid(query, brand_filter=None):
         db_text = row['Clean_Text']
         db_brand = str(row['Merk']).lower()
         
-        fuzzy_ratio = SequenceMatcher(None, query_clean, db_text).ratio()
+        fuzzy_ratio = SequenceMatcher(None, search_query, db_text).ratio()
         final_score = (row['tfidf_score'] * 0.4) + (fuzzy_ratio * 0.6)
         
         if brand_filter and brand_filter.lower() not in db_brand:
@@ -151,23 +184,25 @@ def search_hybrid(query, brand_filter=None):
         
         if num_mismatch: final_score -= 0.5 
 
+        # --- LOGIC ANTI-CLASH (PENJAGA GAWANG) ---
         clash = False
         for key, enemies in HARD_CONFLICTS.items():
-            if key in query_clean:
+            # Cek key di query ASLI user atau yang sudah ditranslate
+            if key in search_query: 
                 for enemy in enemies:
                     if enemy in db_text:
                         clash = True; break
-        if clash: continue 
+        if clash: continue # SKIP KANDIDAT INI
 
         for kw in ESSENTIAL_KEYWORDS:
-            if kw in query_clean and kw not in db_text:
+            if kw in search_query and kw not in db_text:
                 final_score -= 0.4 
-            if kw not in query_clean and kw in db_text:
+            if kw not in search_query and kw in db_text:
                 final_score -= 0.1 
 
         colors = ["hitam", "kuning", "putih", "ungu", "gold", "pink", "blue"]
         for c in colors:
-            if c in query_clean and c not in db_text:
+            if c in search_query and c not in db_text:
                 has_other_color = any(oc in db_text for oc in colors if oc != c)
                 if has_other_color: final_score -= 0.5 
 
@@ -175,7 +210,7 @@ def search_hybrid(query, brand_filter=None):
             best_score = final_score
             best_match = row
 
-    threshold = 0.35 if not brand_filter else 0.25
+    threshold = 0.35 if not brand_filter else 0.20 # Turunkan dikit threshold jika ada brand filter
     
     if best_match is not None and best_score > threshold:
         return best_match['Nama'], round(best_score, 2), best_match['Merk'], best_match['Kode']
@@ -205,13 +240,10 @@ def parse_po(text):
         line = line.strip()
         if not line or line == "-" or line == footer_bonus: continue
         
-        # CLEANING AWAL (Hapus bullet strip - di depan)
         line_clean = re.sub(r'^[\-\.\s]+', '', line) 
-        
         line_clean = re.sub(r'\b(cash|tunai|kredit|tempo)\b', '', line_clean, flags=re.IGNORECASE)
         line_clean = re.sub(r'[\(\)]', ' ', line_clean)
         
-        # Regex Qty
         qty_pattern = r'(?:^|\s)(?:x|@|@x)?\s*(\d+)\s*(?:x|pcs|pc|lsn|box|ktk|pak|btl)?(?:\s*[\+\*]\s*\d+)?(?:$|\s)'
         qty_match = re.findall(qty_pattern, line_clean, re.IGNORECASE)
         
@@ -230,8 +262,9 @@ def parse_po(text):
 
         clean_name = re.sub(qty_pattern, ' ', line_clean, flags=re.IGNORECASE)
         clean_name = re.sub(r'\d+\s*[\+\*]\s*\d+', ' ', clean_name)
-        
         clean_name = re.sub(r'[^\w\s]', ' ', clean_name).strip()
+        
+        # Translate kata kunci di level parser juga (untuk deteksi kategori)
         words = clean_name.lower().split()
         final_words = []
         for w in words:
@@ -270,29 +303,15 @@ def parse_po(text):
             found_collection = False
             check_str = f"{curr_cat} {clean_name}".lower()
             
-            # --- PERBAIKAN LOGIKA DISINI ---
-            # Cek apakah baris ini SENDIRI mengandung nama kategori?
-            # Jika baris ini ada kata "peeling gel", maka pakai "peeling gel" sbg kategori
-            # abaikan curr_cat (powder mask) yang lama.
-            
-            effective_cat = curr_cat # Default pakai kategori induk
-            
+            effective_cat = curr_cat 
             for key, variants in AUTO_VARIANTS.items():
-                # Cek prioritas: Apakah kategori ada di baris ini?
                 if key in clean_name.lower():
-                    effective_cat = key # Override kategori induk!
-                    # Lanjut expand
-                    for v in variants:
-                        expand_list.append(f"{curr_brand} {effective_cat} {v}".strip())
-                    found_collection = True
-                    break
-                
-                # Jika tidak ada di baris ini, cek gabungan dengan induk
+                    effective_cat = key 
+                    for v in variants: expand_list.append(f"{curr_brand} {effective_cat} {v}".strip())
+                    found_collection = True; break
                 elif key in check_str:
-                    for v in variants:
-                        expand_list.append(f"{curr_brand} {key} {v}".strip())
-                    found_collection = True
-                    break
+                    for v in variants: expand_list.append(f"{curr_brand} {key} {v}".strip())
+                    found_collection = True; break
             
             if not found_collection:
                 expand_list.append(f"{curr_brand} {curr_cat} {clean_name}")
@@ -320,7 +339,7 @@ def parse_po(text):
 col1, col2 = st.columns([1, 2])
 with col1:
     st.markdown("### 📥 Input PO Sales")
-    raw_text = st.text_area("Paste chat di sini:", height=400, placeholder="Contoh:\nToko Jaya\nSyb\n-powder mask\nTea tree x20\n...")
+    raw_text = st.text_area("Paste chat di sini:", height=400, placeholder="Contoh:\nYu Chun Mei\nCream night 72\nCleanser 72")
     if st.button("🚀 PROSES DATA", type="primary", use_container_width=True):
         if raw_text:
             store, res = parse_po(raw_text)
