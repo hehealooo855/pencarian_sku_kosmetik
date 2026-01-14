@@ -11,14 +11,14 @@ import io
 # 1. KONFIGURASI HALAMAN
 # ==========================================
 st.set_page_config(page_title="AI Fakturis Ultimate", page_icon="💎", layout="wide")
-st.title("💎 AI Fakturis Pro (Full Coverage)")
+st.title("💎 AI Fakturis Pro (Final Version)")
 st.markdown("""
-**Status:** Abbreviation Expander Active.
-**Fix:** Membaca singkatan warna (N.black, D.brown) & mencegah skip item.
+**Status:** Stabil (Gemini 1.5 Flash).
+**Fitur:** Full Context Reader (Diosys/Thai/Javinci) + Singkatan Fixer.
 """)
 
-# --- API KEY ---
-API_KEY_RAHASIA = "AIzaSyD5Oz4FQo4o0lpj6PvcUYHYZp7XDVJa-qc"
+# --- PENTING: TEMPEL KUNCI BARU ANDA DI SINI ---
+API_KEY_RAHASIA = "AIzaSyD5Oz4FQo4o0lpj6PvcUYHYZp7XDVJa-qc" 
 
 # ==========================================
 # 2. LOAD DATABASE
@@ -74,7 +74,6 @@ def expand_abbreviations(text):
         r"\bcerry": "Cherry",
         r"\bblue bl": "Blue Bleaching",
         r"\bash": "Ash Grey",
-        # Fix Brand typos
         r"tiga kenza": "Tiga Kenza", 
     }
     
@@ -135,30 +134,7 @@ def get_smart_context(raw_text, df):
         return df.iloc[top_indices]
 
 # ==========================================
-# 5. MODEL AUTO-DETECT
-# ==========================================
-def find_working_model():
-    try:
-        available_models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
-        
-        priority_list = [
-            "models/gemini-1.5-flash", 
-            "models/gemini-1.5-pro",
-            "models/gemini-1.0-pro",
-            "models/gemini-pro"
-        ]
-        
-        for p in priority_list:
-            if p in available_models: return p
-        return available_models[0] if available_models else "models/gemini-pro"
-    except:
-        return "models/gemini-pro"
-
-# ==========================================
-# 6. AI PROCESSOR
+# 5. JSON CLEANER
 # ==========================================
 def clean_and_parse_json(text_response):
     try:
@@ -173,15 +149,20 @@ def clean_and_parse_json(text_response):
     except:
         return []
 
+# ==========================================
+# 6. AI PROCESSOR (FIXED MODEL VERSION)
+# ==========================================
 def process_with_ai(api_key, raw_text, context_df):
     genai.configure(api_key=api_key)
-    model_name = find_working_model()
+    
+    # --- PERBAIKAN: KUNCI KE MODEL YANG VALID ---
+    model_name = "models/gemini-1.5-flash"
     
     # Pre-process text sebelum dikirim ke AI
     optimized_text = expand_abbreviations(raw_text)
     
     generation_config = {
-        "temperature": 0.1, # Sangat logis
+        "temperature": 0.1, 
         "max_output_tokens": 8192,
     }
     
@@ -204,7 +185,6 @@ def process_with_ai(api_key, raw_text, context_df):
         2. Context Hierarchy: 
            - Header "Diosys 100ml" applies to ALL lines below it (N.black, Brown, Coffee, etc) until a new brand appears.
            - "Brown" under "Diosys" means "Diosys Brown".
-           - "Coffee" under "Diosys" means "Diosys Coffee".
         3. Quantity Logic: 
            - "(24+3)" in Header means items are bundled/bonus.
            - Line "N.black 12pcs" means Qty: 12.
@@ -227,7 +207,7 @@ def process_with_ai(api_key, raw_text, context_df):
 # 7. USER INTERFACE
 # ==========================================
 with st.sidebar:
-    st.success("✅ AI Full Coverage")
+    st.success("✅ AI Siap Digunakan")
     if st.button("Hapus Cache"):
         st.cache_data.clear()
 
@@ -236,20 +216,18 @@ col1, col2 = st.columns([1, 1.5])
 with col1:
     st.subheader("📝 Input PO")
     raw_text = st.text_area("Paste Chat Sales:", height=450)
-    process_btn = st.button("🚀 PROSES (LENGKAP)", type="primary", use_container_width=True)
+    process_btn = st.button("🚀 PROSES", type="primary", use_container_width=True)
 
 with col2:
     st.subheader("📊 Hasil Analisa")
     
     if process_btn and raw_text:
         with st.spinner("🤖 Menerjemahkan singkatan & Scan Database..."):
-            # 1. Pre-process text locally
-            clean_text_debug = expand_abbreviations(raw_text)
             
-            # 2. Get Context
+            # 1. Get Context
             smart_df = get_smart_context(raw_text, df_db)
             
-            # 3. AI Process
+            # 2. AI Process
             ai_results, info = process_with_ai(API_KEY_RAHASIA, raw_text, smart_df)
             
             if isinstance(ai_results, list) and len(ai_results) > 0:
