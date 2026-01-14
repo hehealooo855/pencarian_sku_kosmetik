@@ -11,14 +11,15 @@ import time
 # ==========================================
 # 1. KONFIGURASI HALAMAN
 # ==========================================
-st.set_page_config(page_title="AI Fakturis Ultimate", page_icon="💎", layout="wide")
-st.title("💎 AI Fakturis Pro (Auto-Fallback)")
+st.set_page_config(page_title="AI Fakturis Final", page_icon="👑", layout="wide")
+st.title("👑 AI Fakturis Pro (Dynamic Core)")
 st.markdown("""
-**Status:** Stabil (Multi-Model Support).
-**Fitur:** Context Injection (Diosys Fix) + Auto-Switch Model jika Error.
+**Status:** Dynamic Model Discovery.
+**Teknologi:** Mencari model aktif secara otomatis (Anti-404).
+**Fitur:** Diosys Context Injection + Typo Fixer.
 """)
 
-# --- PENTING: TEMPEL KUNCI BARU ANDA DI SINI ---
+# --- TEMPEL API KEY BARU ANDA DI SINI ---
 API_KEY_RAHASIA = "AIzaSyBRCb7tZE_9etCicL4Td3nlb5cg9wzVgVs" 
 
 # ==========================================
@@ -58,7 +59,7 @@ def load_data():
 df_db = load_data()
 
 # ==========================================
-# 3. TEXT ENGINE (INJECTOR & FIXER)
+# 3. TEXT ENGINE (DIOSYS FIXER)
 # ==========================================
 def clean_typos(text):
     """Membersihkan typo sales"""
@@ -84,8 +85,9 @@ def clean_typos(text):
 
 def inject_context(raw_text, df):
     """
-    FITUR INJEKSI: Menempelkan Brand ke setiap baris item secara paksa.
-    Ini solusi 'Suap' agar AI 100% paham Diosys.
+    Menempelkan Brand ke setiap baris item secara paksa.
+    Input: "Brwon 6pcs" (setelah header Diosys)
+    Output: "Diosys Brown 6pcs"
     """
     lines = raw_text.split('\n')
     new_lines = []
@@ -101,6 +103,7 @@ def inject_context(raw_text, df):
     for line in lines:
         clean_line = clean_typos(line) 
         
+        # Deteksi Header Brand
         found_brand_in_line = False
         for b in brand_list:
             if b in clean_line:
@@ -115,9 +118,9 @@ def inject_context(raw_text, df):
                     found_brand_in_line = True
                     break
         
-        # Cek item (ada angka?)
+        # Inject Brand ke Item Anak
         if re.search(r'\d+', clean_line):
-            # Jika item yatim piatu, tempelkan brand induk
+            # Jika baris ini punya angka TAPI tidak punya nama brand
             if current_brand and current_brand not in clean_line:
                 new_line = f"{current_brand} {clean_line}"
                 new_lines.append(new_line)
@@ -141,6 +144,7 @@ def get_smart_context(processed_text, df):
     
     if found_brands:
         brand_df = df[df['Merk'].isin(found_brands)]
+        # Fallback TF-IDF
         vectorizer = TfidfVectorizer(analyzer='word', ngram_range=(1, 2))
         matrix = vectorizer.fit_transform(df['Search_Key'])
         clean_search = re.sub(r'[^a-zA-Z0-9\s]', ' ', processed_text)
@@ -159,7 +163,7 @@ def get_smart_context(processed_text, df):
         return df.iloc[top_indices]
 
 # ==========================================
-# 5. AI PROCESSOR (MULTI-MODEL TRY)
+# 5. AI PROCESSOR (DYNAMIC BLIND DISCOVERY)
 # ==========================================
 def clean_and_parse_json(text_response):
     try:
@@ -174,18 +178,32 @@ def clean_and_parse_json(text_response):
     except:
         return []
 
+def get_any_active_model():
+    """Minta daftar model ke Google, ambil yang pertama kali ketemu"""
+    try:
+        active_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                active_models.append(m.name)
+        
+        # Urutkan: Prefer Flash atau Pro
+        active_models.sort(key=lambda x: 'flash' not in x) # Flash duluan biar cepat
+        
+        if active_models:
+            return active_models
+        return []
+    except Exception as e:
+        return []
+
 def process_with_ai(api_key, processed_text, context_df):
     genai.configure(api_key=api_key)
     
-    # --- DAFTAR MODEL YANG AKAN DICOBA BERURUTAN ---
-    # Jika model pertama error, dia akan loncat ke model kedua, dst.
-    models_to_try = [
-        "models/gemini-1.5-flash",       # Prioritas 1: Cepat & Murah
-        "models/gemini-1.5-flash-001",   # Prioritas 2: Versi spesifik
-        "models/gemini-pro",             # Prioritas 3: Paling Stabil (Old Reliable)
-        "models/gemini-1.0-pro"          # Prioritas 4: Nama lain versi stabil
-    ]
+    # 1. CARI MODEL YANG HIDUP (BLIND DISCOVERY)
+    available_models = get_any_active_model()
     
+    if not available_models:
+        return [], "CRITICAL: Tidak ada model AI yang ditemukan di akun ini. Cek API Key."
+
     csv_context = context_df[['Kode', 'Nama', 'Merk']].to_csv(index=False)
     
     prompt = f"""
@@ -212,32 +230,33 @@ def process_with_ai(api_key, processed_text, context_df):
         "max_output_tokens": 8192,
     }
 
-    # --- LOOPING PERCOBAAN MODEL ---
+    # 2. COBA MODEL SATU PER SATU SAMPAI BERHASIL
     last_error = ""
-    
-    for model_name in models_to_try:
+    for model_name in available_models:
         try:
-            # st.write(f"Mencoba model: {model_name}...") # Debug info (bisa dihapus)
+            # Skip model vision-only (jika ada)
+            if "vision" in model_name: continue
+            
             model = genai.GenerativeModel(model_name=model_name, generation_config=generation_config)
             response = model.generate_content(prompt)
             result = clean_and_parse_json(response.text)
             
-            # Jika berhasil (tidak error), langsung return hasilnya
-            return result, model_name 
+            return result, model_name # Berhasil! Keluar loop.
             
         except Exception as e:
-            # Jika error (404 atau lainnya), simpan errornya dan lanjut ke model berikutnya
             last_error = str(e)
+            if "429" in str(e): # Kalau limit habis, lanjut model berikutnya
+                continue
+            # Kalau error lain, mungkin lanjut juga
             continue
             
-    # Jika semua model gagal
-    return [], f"Semua model gagal. Error terakhir: {last_error}"
+    return [], f"Semua {len(available_models)} model gagal. Err: {last_error}"
 
 # ==========================================
 # 6. USER INTERFACE
 # ==========================================
 with st.sidebar:
-    st.success("✅ Multi-Model System ON")
+    st.success("✅ Dynamic Core Active")
     if st.button("Hapus Cache"):
         st.cache_data.clear()
 
@@ -246,13 +265,13 @@ col1, col2 = st.columns([1, 1.5])
 with col1:
     st.subheader("📝 Input PO")
     raw_text = st.text_area("Paste Chat Sales:", height=450)
-    process_btn = st.button("🚀 PROSES (ANTI MOGOK)", type="primary", use_container_width=True)
+    process_btn = st.button("🚀 PROSES (FINAL)", type="primary", use_container_width=True)
 
 with col2:
     st.subheader("📊 Hasil Analisa")
     
     if process_btn and raw_text:
-        with st.spinner("🤖 Memperbaiki Typo, Inject Brand & Mencari Model yang Hidup..."):
+        with st.spinner("🤖 Mencari Model Aktif & Memproses Data..."):
             
             # 1. INJECT CONTEXT
             injected_text = inject_context(raw_text, df_db)
@@ -260,7 +279,7 @@ with col2:
             # 2. Get Context
             smart_df = get_smart_context(injected_text, df_db)
             
-            # 3. AI Process (Auto-Switching)
+            # 3. AI Process (Dynamic Discovery)
             ai_results, info = process_with_ai(API_KEY_RAHASIA, injected_text, smart_df)
             
             if isinstance(ai_results, list) and len(ai_results) > 0:
@@ -295,4 +314,4 @@ with col2:
             else:
                 st.error("Gagal.")
                 st.write("Detail Error:", info)
-                st.warning("Coba lagi nanti atau cek apakah API Key sudah benar.")
+                st.warning("Pastikan API Key benar dan Anda sudah update requirements.txt!")
