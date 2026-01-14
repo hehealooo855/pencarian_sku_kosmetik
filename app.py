@@ -11,13 +11,13 @@ import io
 # 1. KONFIGURASI HALAMAN
 # ==========================================
 st.set_page_config(page_title="AI Fakturis Ultimate", page_icon="💎", layout="wide")
-st.title("💎 AI Fakturis Pro (Typo Killer)")
+st.title("💎 AI Fakturis Pro (Context Injection)")
 st.markdown("""
-**Status:** Stabil (Auto-Detect Model).
-**Fix:** Menangani typo parah sales (Brwon, Coffe, Cerry) agar terbaca sebagai varian Diosys.
+**Status:** Context Injection Active.
+**Fix:** Memaksa brand menempel pada setiap baris varian (Solusi 100% Diosys).
 """)
 
-# --- PENTING: TEMPEL KUNCI BARU ANDA DI SINI ---
+# --- API KEY ---
 API_KEY_RAHASIA = "AIzaSyBRCb7tZE_9etCicL4Td3nlb5cg9wzVgVs" 
 
 # ==========================================
@@ -58,91 +58,137 @@ def load_data():
 df_db = load_data()
 
 # ==========================================
-# 3. TEXT PRE-PROCESSOR (KAMUS TYPO & SINGKATAN)
+# 3. TEXT ENGINE (INJECTOR & FIXER)
 # ==========================================
-def expand_abbreviations(text):
-    """
-    Mengubah singkatan dan TYPO sales menjadi nama lengkap yang benar.
-    """
+def clean_typos(text):
+    """Membersihkan typo sales yang aneh-aneh"""
     replacements = {
-        # Singkatan Warna
+        # DIOSYS TYPOS (CRITICAL)
         r"\bn\.black": "Natural Black",
+        r"\bd\.brwon": "Dark Brown", # Typo brwon
         r"\bd\.brown": "Dark Brown",
+        r"\bbrwon": "Brown",         # Typo brwon
+        r"\bcoffe\b": "Coffee",      # Typo coffe
+        r"\bcerry": "Cherry",        # Typo cerry
         r"\bl\.blonde": "Light Blonde",
         r"\bg\.blonde": "Golden Blonde",
         r"\bbl\b": "Bleaching",
         r"\bblue bl": "Blue Bleaching",
         r"\bash": "Ash Grey",
-        
-        # TYPO PARAH (Diosys Case)
-        r"\bd\.brwon": "Dark Brown",  # Typo: Brwon -> Brown
-        r"\bbrwon": "Brown",          # Typo: Brwon -> Brown
-        r"\bcoffe": "Coffee",         # Typo: Coffe -> Coffee
-        r"\bcerry": "Cherry",         # Typo: Cerry -> Cherry
+        r"red wine": "Red Wine",
         
         # Brand Typos
-        r"tiga kenza": "Tiga Kenza", 
+        r"tiga kenza": "Tiga Kenza",
     }
     
     text_lower = text.lower()
     for pattern, replacement in replacements.items():
         text_lower = re.sub(pattern, replacement.lower(), text_lower)
-    
     return text_lower
+
+def inject_context(raw_text, df):
+    """
+    FITUR BARU: Menempelkan Brand Induk ke setiap baris anak.
+    Contoh:
+    Diosys 100ml
+    Brown 6pcs
+    
+    Menjadi:
+    Diosys 100ml
+    Diosys Brown 6pcs
+    """
+    lines = raw_text.split('\n')
+    new_lines = []
+    current_brand = ""
+    
+    # Ambil daftar brand dari DB untuk deteksi
+    all_brands = df['Merk'].dropna().unique()
+    brand_list = [str(b).lower() for b in all_brands]
+    
+    # Alias brands
+    aliases = {"kim": "kim", "whitelab": "whitelab", "bonavie": "bonavie", 
+               "goute": "goute", "syb": "syb", "thai": "thai", "javinci": "javinci", 
+               "diosys": "diosys", "implora": "implora"}
+
+    for line in lines:
+        clean_line = clean_typos(line) # Perbaiki typo dulu
+        
+        # 1. Cek apakah baris ini Header Brand?
+        found_brand_in_line = False
+        for b in brand_list:
+            if b in clean_line:
+                current_brand = b
+                found_brand_in_line = True
+                break
+        
+        if not found_brand_in_line:
+            for k, v in aliases.items():
+                if k in clean_line:
+                    current_brand = v
+                    found_brand_in_line = True
+                    break
+        
+        # 2. Cek apakah ini baris Item (ada angka)?
+        # Regex angka qty (misal 12pcs, 6pcs)
+        if re.search(r'\d+', clean_line):
+            # Jika ini item DAN kita punya active brand DAN brand belum tertulis di baris ini
+            if current_brand and current_brand not in clean_line:
+                # INJEKSI BRAND!
+                new_line = f"{current_brand} {clean_line}"
+                new_lines.append(new_line)
+            else:
+                new_lines.append(clean_line)
+        else:
+            new_lines.append(clean_line)
+            
+    return "\n".join(new_lines)
 
 # ==========================================
 # 4. SMART CONTEXT GENERATOR
 # ==========================================
-def get_smart_context(raw_text, df):
-    # Bersihkan teks dulu dengan Pre-Processor
-    clean_text = expand_abbreviations(raw_text)
-    
+def get_smart_context(processed_text, df):
+    # Gunakan teks yang sudah di-inject brand-nya untuk mencari konteks
     all_brands = df['Merk'].dropna().unique()
     found_brands = []
     
-    brand_aliases = {
-        "kim": "KIM", "whitelab": "WHITELAB", "bonavie": "BONAVIE", 
-        "goute": "GOUTE", "syb": "SYB", "yu chun mei": "YU CHUN MEI", 
-        "ycm": "YU CHUN MEI", "thai": "THAI", "javinci": "JAVINCI",
-        "diosys": "DIOSYS", "implora": "IMPLORA", "hanasui": "HANASUI"
-    }
-
-    # Cek Brand
     for brand in all_brands:
-        if str(brand).lower() in clean_text:
+        if str(brand).lower() in processed_text.lower():
             found_brands.append(brand)
     
-    for alias, real in brand_aliases.items():
-        if alias in clean_text and real not in found_brands:
-            found_brands.append(real)
-
     if found_brands:
-        # Ambil SEMUA item dari brand yang terdeteksi
         brand_df = df[df['Merk'].isin(found_brands)]
-        
-        # Tambahkan backup TF-IDF untuk item non-brand (jaga-jaga)
+        # Tambah fallback TF-IDF
         vectorizer = TfidfVectorizer(analyzer='word', ngram_range=(1, 2))
         matrix = vectorizer.fit_transform(df['Search_Key'])
-        clean_search = re.sub(r'[^a-zA-Z0-9\s]', ' ', clean_text)
+        clean_search = re.sub(r'[^a-zA-Z0-9\s]', ' ', processed_text)
         query_vec = vectorizer.transform([clean_search])
         scores = cosine_similarity(query_vec, matrix).flatten()
         top_indices = scores.argsort()[-100:][::-1]
         text_df = df.iloc[top_indices]
-        
         return pd.concat([brand_df, text_df]).drop_duplicates(subset=['Kode'])
     else:
-        # Fallback biasa
+        # Fallback total
         vectorizer = TfidfVectorizer(analyzer='word', ngram_range=(1, 2))
         matrix = vectorizer.fit_transform(df['Search_Key'])
-        clean_search = re.sub(r'[^a-zA-Z0-9\s]', ' ', clean_text)
+        clean_search = re.sub(r'[^a-zA-Z0-9\s]', ' ', processed_text)
         query_vec = vectorizer.transform([clean_search])
         scores = cosine_similarity(query_vec, matrix).flatten()
         top_indices = scores.argsort()[-100:][::-1]
         return df.iloc[top_indices]
 
 # ==========================================
-# 5. JSON CLEANER
+# 5. MODEL & AI PROCESSOR
 # ==========================================
+def get_available_model(api_key):
+    genai.configure(api_key=api_key)
+    try:
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        for m in models:
+            if 'flash' in m.lower(): return m
+        return models[0] if models else "models/gemini-pro"
+    except:
+        return "models/gemini-pro"
+
 def clean_and_parse_json(text_response):
     try:
         text = text_response.replace("```json", "").replace("```", "")
@@ -156,31 +202,9 @@ def clean_and_parse_json(text_response):
     except:
         return []
 
-# ==========================================
-# 6. AI PROCESSOR (AUTO DETECT MODEL)
-# ==========================================
-def get_available_model(api_key):
-    """Mencari model yang tersedia di akun user secara otomatis"""
+def process_with_ai(api_key, processed_text, context_df):
     genai.configure(api_key=api_key)
-    try:
-        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # Prioritas: Flash -> 1.5 Pro -> 1.0 Pro -> Gemini Pro
-        for m in models:
-            if 'flash' in m.lower(): return m
-        for m in models:
-            if '1.5' in m and 'pro' in m.lower(): return m
-        
-        return models[0] if models else "models/gemini-pro"
-    except:
-        return "models/gemini-pro"
-
-def process_with_ai(api_key, raw_text, context_df):
-    # Cari model yang valid dulu
     model_name = get_available_model(api_key)
-    
-    # Pre-process text sebelum dikirim ke AI (Perbaiki Typo disini)
-    optimized_text = expand_abbreviations(raw_text)
     
     generation_config = {
         "temperature": 0.1, 
@@ -193,29 +217,21 @@ def process_with_ai(api_key, raw_text, context_df):
 
         prompt = f"""
         Role: Expert Data Entry.
-        Task: Extract items from INPUT CHAT based on CANDIDATE LIST.
+        Task: Map items from INPUT CHAT to CANDIDATE LIST.
         
         CANDIDATE LIST (Database):
         {csv_context}
         
-        INPUT CHAT:
-        {optimized_text}
+        INPUT CHAT (Already Processed):
+        {processed_text}
         
         INSTRUCTIONS:
-        1. Process EVERY line. Do NOT skip any line containing quantity.
-        2. Context Hierarchy: 
-           - Header "Diosys 100ml" applies to ALL lines below it (Natural Black, Brown, Coffee, etc) until a new brand appears.
-           - "Brown" under "Diosys" means "Diosys Brown".
-           - "Coffee" under "Diosys" means "Diosys Coffee".
-        3. Quantity Logic: 
-           - "(24+3)" in Header means items are bundled/bonus.
-           - Line "N.black 12pcs" means Qty: 12.
+        1. All items in INPUT CHAT already have Brand Names attached (e.g., "diosys brown"). Use this to find exact match.
+        2. Quantity Logic: 
+           - "(24+3)" header means items below are bundled.
            - "12pcs (12+1)" means Qty: 12, Note: Bonus 1.
-        
-        OUTPUT JSON:
-        [
-            {{"kode": "DB_CODE", "nama_barang": "DB_NAME", "qty_input": "12", "keterangan": "Bonus info"}}
-        ]
+        3. OUTPUT JSON:
+           [ {{"kode": "...", "nama_barang": "...", "qty_input": "...", "keterangan": "..."}} ]
         """
         
         response = model.generate_content(prompt)
@@ -223,13 +239,13 @@ def process_with_ai(api_key, raw_text, context_df):
         return result, model_name
 
     except Exception as e:
-        return [], f"{str(e)} (Model tried: {model_name})"
+        return [], str(e)
 
 # ==========================================
-# 7. USER INTERFACE
+# 6. USER INTERFACE
 # ==========================================
 with st.sidebar:
-    st.success("✅ AI Typo Killer Aktif")
+    st.success("✅ Context Injection ON")
     if st.button("Hapus Cache"):
         st.cache_data.clear()
 
@@ -238,31 +254,35 @@ col1, col2 = st.columns([1, 1.5])
 with col1:
     st.subheader("📝 Input PO")
     raw_text = st.text_area("Paste Chat Sales:", height=450)
-    process_btn = st.button("🚀 PROSES (LENGKAP)", type="primary", use_container_width=True)
+    process_btn = st.button("🚀 PROSES (100% FIX)", type="primary", use_container_width=True)
 
 with col2:
     st.subheader("📊 Hasil Analisa")
     
     if process_btn and raw_text:
-        with st.spinner("🤖 Memperbaiki Typo (Brwon -> Brown) & Scan Database..."):
+        with st.spinner("🤖 Injecting Brand Context & Scanning..."):
             
-            # 1. Get Context
-            smart_df = get_smart_context(raw_text, df_db)
+            # 1. INJECT CONTEXT (THE MAGIC STEP)
+            # Ini mengubah "Brown 6pcs" menjadi "Diosys Brown 6pcs"
+            injected_text = inject_context(raw_text, df_db)
             
-            # 2. AI Process
-            ai_results, info = process_with_ai(API_KEY_RAHASIA, raw_text, smart_df)
+            # Debugging: Lihat apa yang dilihat AI (Opsional, bisa dihapus)
+            # st.text_area("Debug: Text sent to AI", injected_text, height=100)
+            
+            # 2. Get Context based on injected text
+            smart_df = get_smart_context(injected_text, df_db)
+            
+            # 3. AI Process
+            ai_results, info = process_with_ai(API_KEY_RAHASIA, injected_text, smart_df)
             
             if isinstance(ai_results, list) and len(ai_results) > 0:
-                st.success(f"Sukses! (Model Used: {info})")
+                st.success(f"Sukses! (Model: {info})")
                 
                 df_res = pd.DataFrame(ai_results)
-                
-                # Normalisasi Kolom
                 df_res.columns = [x.lower() for x in df_res.columns]
                 rename_map = {"kode": "Kode", "nama_barang": "Nama Barang", "qty_input": "Qty", "keterangan": "Ket"}
                 df_res = df_res.rename(columns=rename_map)
                 
-                # Display
                 cols = ["Kode", "Nama Barang", "Qty", "Ket"]
                 valid_cols = [c for c in cols if c in df_res.columns]
                 st.dataframe(df_res[valid_cols], hide_index=True, use_container_width=True)
@@ -282,7 +302,7 @@ with col2:
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                     df_res.to_excel(writer, index=False, sheet_name='PO')
-                st.download_button("📥 Download Excel", data=buffer.getvalue(), file_name="PO_Full.xlsx", mime="application/vnd.ms-excel")
+                st.download_button("📥 Download Excel", data=buffer.getvalue(), file_name="PO_Fixed.xlsx", mime="application/vnd.ms-excel")
                 
             else:
                 st.error("Gagal membaca respon AI.")
