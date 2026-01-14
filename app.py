@@ -22,8 +22,11 @@ AUTO_VARIANTS = {
     "toner badan": ["Red Jelly", "Coklat", "Fresh Skin", "Kelupas", "Ginseng"],
     "toner": ["Rose", "Chamomile", "Aloe", "Lemon"],
     "masker wajah": ["Bengkoang", "Aloe Vera", "Cucumber", "Avocado"],
-    "cushion": ["01", "02", "03", "04", "Ivory", "Natural", "Beige"], # Tambahan untuk Goute
-    "blush": ["01", "02", "03", "04"], # Tambahan untuk Goublush
+    # Tambahan Baru untuk Goute
+    "cushion": ["01", "02", "03", "04", "Ivory", "Natural", "Beige"], 
+    "blush": ["01", "02", "03", "04"], 
+    "goublush": ["01", "02", "03", "04"],
+    # Tambahan Yu Chun Mei
     "yu chun mei": ["Night Cream", "Day Cream", "Cleanser", "Serum"]
 }
 
@@ -35,7 +38,7 @@ BRAND_ALIASES = {
     "implora": "IMPLORA", "brasov": "BRASOV", "tata": "JAVINCI",
     "body white": "JAVINCI", "holly": "HOLLY",
     "yu chun mei": "YU CHUN MEI", "ycm": "YU CHUN MEI",
-    # Tambahan Brand Baru dari PO Sales
+    # Brand Baru dari PO Sales
     "whitelab": "WHITELAB", "bonavie": "BONAVIE", "goute": "GOUTE",
     "kim": "KIM", "kim kosmetik": "KIM"
 }
@@ -238,7 +241,7 @@ def parse_po(text):
         line_clean = re.sub(r'[\(\)]', ' ', line_clean)
         
         # --- FIX UTAMA: COLON PARSER (:12pcs -> x 12pcs) ---
-        # Ini mengubah "serum:12pcs" menjadi "serum x 12pcs" agar tertangkap regex monster
+        # Ini "sihir" yang mengubah format :12pcs menjadi x 12pcs
         line_clean = re.sub(r':\s*(\d+)', r' x \1', line_clean)
         
         # Regex Monster
