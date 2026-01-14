@@ -12,10 +12,10 @@ import time
 # 1. KONFIGURASI HALAMAN
 # ==========================================
 st.set_page_config(page_title="AI Fakturis Ultimate", page_icon="💎", layout="wide")
-st.title("💎 AI Fakturis Pro (Stable Version)")
+st.title("💎 AI Fakturis Pro (Auto-Fallback)")
 st.markdown("""
-**Status:** Stabil (Gemini 1.5 Flash - High Quota).
-**Fitur:** Context Injection (Diosys Fix) + Typo Killer.
+**Status:** Stabil (Multi-Model Support).
+**Fitur:** Context Injection (Diosys Fix) + Auto-Switch Model jika Error.
 """)
 
 # --- PENTING: TEMPEL KUNCI BARU ANDA DI SINI ---
@@ -50,7 +50,6 @@ def load_data():
         df = df.rename(columns={col_map['kode']: 'Kode', col_map['nama']: 'Nama', col_map['merk']: 'Merk'})
         df = df[['Kode', 'Nama', 'Merk']].dropna(subset=['Nama'])
         
-        # Kolom bantu
         df['Search_Key'] = df['Nama'] + " " + df['Merk']
         df['Search_Key'] = df['Search_Key'].astype(str).str.lower()
         return df
@@ -62,9 +61,8 @@ df_db = load_data()
 # 3. TEXT ENGINE (INJECTOR & FIXER)
 # ==========================================
 def clean_typos(text):
-    """Membersihkan typo sales yang aneh-aneh"""
+    """Membersihkan typo sales"""
     replacements = {
-        # DIOSYS TYPOS (CRITICAL)
         r"\bn\.black": "Natural Black",
         r"\bd\.brwon": "Dark Brown", 
         r"\bd\.brown": "Dark Brown",
@@ -77,11 +75,8 @@ def clean_typos(text):
         r"\bblue bl": "Blue Bleaching",
         r"\bash": "Ash Grey",
         r"red wine": "Red Wine",
-        
-        # Brand Typos
         r"tiga kenza": "Tiga Kenza",
     }
-    
     text_lower = text.lower()
     for pattern, replacement in replacements.items():
         text_lower = re.sub(pattern, replacement.lower(), text_lower)
@@ -90,6 +85,7 @@ def clean_typos(text):
 def inject_context(raw_text, df):
     """
     FITUR INJEKSI: Menempelkan Brand ke setiap baris item secara paksa.
+    Ini solusi 'Suap' agar AI 100% paham Diosys.
     """
     lines = raw_text.split('\n')
     new_lines = []
@@ -119,9 +115,9 @@ def inject_context(raw_text, df):
                     found_brand_in_line = True
                     break
         
-        # Cek apakah baris ini item (ada angka)?
+        # Cek item (ada angka?)
         if re.search(r'\d+', clean_line):
-            # Jika item ini yatim piatu (tidak ada brand di barisnya), tempelkan brand induk
+            # Jika item yatim piatu, tempelkan brand induk
             if current_brand and current_brand not in clean_line:
                 new_line = f"{current_brand} {clean_line}"
                 new_lines.append(new_line)
@@ -145,7 +141,6 @@ def get_smart_context(processed_text, df):
     
     if found_brands:
         brand_df = df[df['Merk'].isin(found_brands)]
-        # Fallback TF-IDF
         vectorizer = TfidfVectorizer(analyzer='word', ngram_range=(1, 2))
         matrix = vectorizer.fit_transform(df['Search_Key'])
         clean_search = re.sub(r'[^a-zA-Z0-9\s]', ' ', processed_text)
@@ -155,7 +150,6 @@ def get_smart_context(processed_text, df):
         text_df = df.iloc[top_indices]
         return pd.concat([brand_df, text_df]).drop_duplicates(subset=['Kode'])
     else:
-        # Fallback total
         vectorizer = TfidfVectorizer(analyzer='word', ngram_range=(1, 2))
         matrix = vectorizer.fit_transform(df['Search_Key'])
         clean_search = re.sub(r'[^a-zA-Z0-9\s]', ' ', processed_text)
@@ -165,7 +159,7 @@ def get_smart_context(processed_text, df):
         return df.iloc[top_indices]
 
 # ==========================================
-# 5. AI PROCESSOR (LOCKED TO 1.5 FLASH)
+# 5. AI PROCESSOR (MULTI-MODEL TRY)
 # ==========================================
 def clean_and_parse_json(text_response):
     try:
@@ -183,60 +177,67 @@ def clean_and_parse_json(text_response):
 def process_with_ai(api_key, processed_text, context_df):
     genai.configure(api_key=api_key)
     
-    # --- HARDCODE KE MODEL STABIL (Anti Limit) ---
-    model_name = "models/gemini-1.5-flash"
+    # --- DAFTAR MODEL YANG AKAN DICOBA BERURUTAN ---
+    # Jika model pertama error, dia akan loncat ke model kedua, dst.
+    models_to_try = [
+        "models/gemini-1.5-flash",       # Prioritas 1: Cepat & Murah
+        "models/gemini-1.5-flash-001",   # Prioritas 2: Versi spesifik
+        "models/gemini-pro",             # Prioritas 3: Paling Stabil (Old Reliable)
+        "models/gemini-1.0-pro"          # Prioritas 4: Nama lain versi stabil
+    ]
     
+    csv_context = context_df[['Kode', 'Nama', 'Merk']].to_csv(index=False)
+    
+    prompt = f"""
+    Role: Expert Data Entry.
+    Task: Map items from INPUT CHAT to CANDIDATE LIST.
+    
+    CANDIDATE LIST (Database):
+    {csv_context}
+    
+    INPUT CHAT (Already Processed):
+    {processed_text}
+    
+    INSTRUCTIONS:
+    1. All items in INPUT CHAT already have Brand Names attached (e.g., "diosys brown"). Use this to find exact match.
+    2. Quantity Logic: 
+        - "(24+3)" header means items below are bundled.
+        - "12pcs (12+1)" means Qty: 12, Note: Bonus 1.
+    3. OUTPUT JSON ONLY:
+        [ {{"kode": "...", "nama_barang": "...", "qty_input": "...", "keterangan": "..."}} ]
+    """
+
     generation_config = {
         "temperature": 0.1, 
         "max_output_tokens": 8192,
     }
+
+    # --- LOOPING PERCOBAAN MODEL ---
+    last_error = ""
     
-    try:
-        model = genai.GenerativeModel(model_name=model_name, generation_config=generation_config)
-        csv_context = context_df[['Kode', 'Nama', 'Merk']].to_csv(index=False)
-
-        prompt = f"""
-        Role: Expert Data Entry.
-        Task: Map items from INPUT CHAT to CANDIDATE LIST.
-        
-        CANDIDATE LIST (Database):
-        {csv_context}
-        
-        INPUT CHAT (Already Processed):
-        {processed_text}
-        
-        INSTRUCTIONS:
-        1. All items in INPUT CHAT already have Brand Names attached (e.g., "diosys brown"). Use this to find exact match.
-        2. Quantity Logic: 
-           - "(24+3)" header means items below are bundled.
-           - "12pcs (12+1)" means Qty: 12, Note: Bonus 1.
-        3. OUTPUT JSON:
-           [ {{"kode": "...", "nama_barang": "...", "qty_input": "...", "keterangan": "..."}} ]
-        """
-        
-        response = model.generate_content(prompt)
-        result = clean_and_parse_json(response.text)
-        return result, model_name
-
-    except Exception as e:
-        # Jika limit habis, coba fallback ke model Pro (Cadangan)
-        if "429" in str(e):
-            time.sleep(2) # Tunggu sebentar
-            try:
-                fallback_model = "models/gemini-pro"
-                model = genai.GenerativeModel(fallback_model)
-                response = model.generate_content(prompt)
-                result = clean_and_parse_json(response.text)
-                return result, f"gemini-pro (Backup)"
-            except:
-                pass
-        return [], str(e)
+    for model_name in models_to_try:
+        try:
+            # st.write(f"Mencoba model: {model_name}...") # Debug info (bisa dihapus)
+            model = genai.GenerativeModel(model_name=model_name, generation_config=generation_config)
+            response = model.generate_content(prompt)
+            result = clean_and_parse_json(response.text)
+            
+            # Jika berhasil (tidak error), langsung return hasilnya
+            return result, model_name 
+            
+        except Exception as e:
+            # Jika error (404 atau lainnya), simpan errornya dan lanjut ke model berikutnya
+            last_error = str(e)
+            continue
+            
+    # Jika semua model gagal
+    return [], f"Semua model gagal. Error terakhir: {last_error}"
 
 # ==========================================
 # 6. USER INTERFACE
 # ==========================================
 with st.sidebar:
-    st.success("✅ High Quota Mode")
+    st.success("✅ Multi-Model System ON")
     if st.button("Hapus Cache"):
         st.cache_data.clear()
 
@@ -245,13 +246,13 @@ col1, col2 = st.columns([1, 1.5])
 with col1:
     st.subheader("📝 Input PO")
     raw_text = st.text_area("Paste Chat Sales:", height=450)
-    process_btn = st.button("🚀 PROSES (STABIL)", type="primary", use_container_width=True)
+    process_btn = st.button("🚀 PROSES (ANTI MOGOK)", type="primary", use_container_width=True)
 
 with col2:
     st.subheader("📊 Hasil Analisa")
     
     if process_btn and raw_text:
-        with st.spinner("🤖 Injecting Context & Processing..."):
+        with st.spinner("🤖 Memperbaiki Typo, Inject Brand & Mencari Model yang Hidup..."):
             
             # 1. INJECT CONTEXT
             injected_text = inject_context(raw_text, df_db)
@@ -259,11 +260,11 @@ with col2:
             # 2. Get Context
             smart_df = get_smart_context(injected_text, df_db)
             
-            # 3. AI Process
+            # 3. AI Process (Auto-Switching)
             ai_results, info = process_with_ai(API_KEY_RAHASIA, injected_text, smart_df)
             
             if isinstance(ai_results, list) and len(ai_results) > 0:
-                st.success(f"Sukses! (Model: {info})")
+                st.success(f"Sukses! (Menggunakan Model: `{info}`)")
                 
                 df_res = pd.DataFrame(ai_results)
                 df_res.columns = [x.lower() for x in df_res.columns]
@@ -289,10 +290,9 @@ with col2:
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                     df_res.to_excel(writer, index=False, sheet_name='PO')
-                st.download_button("📥 Download Excel", data=buffer.getvalue(), file_name="PO_Fixed.xlsx", mime="application/vnd.ms-excel")
+                st.download_button("📥 Download Excel", data=buffer.getvalue(), file_name="PO_Final.xlsx", mime="application/vnd.ms-excel")
                 
             else:
                 st.error("Gagal.")
                 st.write("Detail Error:", info)
-                if "429" in info:
-                    st.warning("⚠️ Kuota harian habis. Silakan buat API Key baru lagi atau tunggu besok.")
+                st.warning("Coba lagi nanti atau cek apakah API Key sudah benar.")
