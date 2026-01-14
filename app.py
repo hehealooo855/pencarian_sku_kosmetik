@@ -6,18 +6,19 @@ from sklearn.metrics.pairwise import cosine_similarity
 import json
 import re
 import io
+import time
 
 # ==========================================
 # 1. KONFIGURASI HALAMAN
 # ==========================================
 st.set_page_config(page_title="AI Fakturis Ultimate", page_icon="💎", layout="wide")
-st.title("💎 AI Fakturis Pro (Context Injection)")
+st.title("💎 AI Fakturis Pro (Stable Version)")
 st.markdown("""
-**Status:** Context Injection Active.
-**Fix:** Memaksa brand menempel pada setiap baris varian (Solusi 100% Diosys).
+**Status:** Stabil (Gemini 1.5 Flash - High Quota).
+**Fitur:** Context Injection (Diosys Fix) + Typo Killer.
 """)
 
-# --- API KEY ---
+# --- PENTING: TEMPEL KUNCI BARU ANDA DI SINI ---
 API_KEY_RAHASIA = "AIzaSyBRCb7tZE_9etCicL4Td3nlb5cg9wzVgVs" 
 
 # ==========================================
@@ -65,11 +66,11 @@ def clean_typos(text):
     replacements = {
         # DIOSYS TYPOS (CRITICAL)
         r"\bn\.black": "Natural Black",
-        r"\bd\.brwon": "Dark Brown", # Typo brwon
+        r"\bd\.brwon": "Dark Brown", 
         r"\bd\.brown": "Dark Brown",
-        r"\bbrwon": "Brown",         # Typo brwon
-        r"\bcoffe\b": "Coffee",      # Typo coffe
-        r"\bcerry": "Cherry",        # Typo cerry
+        r"\bbrwon": "Brown",         
+        r"\bcoffe\b": "Coffee",      
+        r"\bcerry": "Cherry",        
         r"\bl\.blonde": "Light Blonde",
         r"\bg\.blonde": "Golden Blonde",
         r"\bbl\b": "Bleaching",
@@ -88,32 +89,22 @@ def clean_typos(text):
 
 def inject_context(raw_text, df):
     """
-    FITUR BARU: Menempelkan Brand Induk ke setiap baris anak.
-    Contoh:
-    Diosys 100ml
-    Brown 6pcs
-    
-    Menjadi:
-    Diosys 100ml
-    Diosys Brown 6pcs
+    FITUR INJEKSI: Menempelkan Brand ke setiap baris item secara paksa.
     """
     lines = raw_text.split('\n')
     new_lines = []
     current_brand = ""
     
-    # Ambil daftar brand dari DB untuk deteksi
     all_brands = df['Merk'].dropna().unique()
     brand_list = [str(b).lower() for b in all_brands]
     
-    # Alias brands
     aliases = {"kim": "kim", "whitelab": "whitelab", "bonavie": "bonavie", 
                "goute": "goute", "syb": "syb", "thai": "thai", "javinci": "javinci", 
                "diosys": "diosys", "implora": "implora"}
 
     for line in lines:
-        clean_line = clean_typos(line) # Perbaiki typo dulu
+        clean_line = clean_typos(line) 
         
-        # 1. Cek apakah baris ini Header Brand?
         found_brand_in_line = False
         for b in brand_list:
             if b in clean_line:
@@ -128,12 +119,10 @@ def inject_context(raw_text, df):
                     found_brand_in_line = True
                     break
         
-        # 2. Cek apakah ini baris Item (ada angka)?
-        # Regex angka qty (misal 12pcs, 6pcs)
+        # Cek apakah baris ini item (ada angka)?
         if re.search(r'\d+', clean_line):
-            # Jika ini item DAN kita punya active brand DAN brand belum tertulis di baris ini
+            # Jika item ini yatim piatu (tidak ada brand di barisnya), tempelkan brand induk
             if current_brand and current_brand not in clean_line:
-                # INJEKSI BRAND!
                 new_line = f"{current_brand} {clean_line}"
                 new_lines.append(new_line)
             else:
@@ -147,7 +136,6 @@ def inject_context(raw_text, df):
 # 4. SMART CONTEXT GENERATOR
 # ==========================================
 def get_smart_context(processed_text, df):
-    # Gunakan teks yang sudah di-inject brand-nya untuk mencari konteks
     all_brands = df['Merk'].dropna().unique()
     found_brands = []
     
@@ -157,7 +145,7 @@ def get_smart_context(processed_text, df):
     
     if found_brands:
         brand_df = df[df['Merk'].isin(found_brands)]
-        # Tambah fallback TF-IDF
+        # Fallback TF-IDF
         vectorizer = TfidfVectorizer(analyzer='word', ngram_range=(1, 2))
         matrix = vectorizer.fit_transform(df['Search_Key'])
         clean_search = re.sub(r'[^a-zA-Z0-9\s]', ' ', processed_text)
@@ -177,18 +165,8 @@ def get_smart_context(processed_text, df):
         return df.iloc[top_indices]
 
 # ==========================================
-# 5. MODEL & AI PROCESSOR
+# 5. AI PROCESSOR (LOCKED TO 1.5 FLASH)
 # ==========================================
-def get_available_model(api_key):
-    genai.configure(api_key=api_key)
-    try:
-        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        for m in models:
-            if 'flash' in m.lower(): return m
-        return models[0] if models else "models/gemini-pro"
-    except:
-        return "models/gemini-pro"
-
 def clean_and_parse_json(text_response):
     try:
         text = text_response.replace("```json", "").replace("```", "")
@@ -204,7 +182,9 @@ def clean_and_parse_json(text_response):
 
 def process_with_ai(api_key, processed_text, context_df):
     genai.configure(api_key=api_key)
-    model_name = get_available_model(api_key)
+    
+    # --- HARDCODE KE MODEL STABIL (Anti Limit) ---
+    model_name = "models/gemini-1.5-flash"
     
     generation_config = {
         "temperature": 0.1, 
@@ -239,13 +219,24 @@ def process_with_ai(api_key, processed_text, context_df):
         return result, model_name
 
     except Exception as e:
+        # Jika limit habis, coba fallback ke model Pro (Cadangan)
+        if "429" in str(e):
+            time.sleep(2) # Tunggu sebentar
+            try:
+                fallback_model = "models/gemini-pro"
+                model = genai.GenerativeModel(fallback_model)
+                response = model.generate_content(prompt)
+                result = clean_and_parse_json(response.text)
+                return result, f"gemini-pro (Backup)"
+            except:
+                pass
         return [], str(e)
 
 # ==========================================
 # 6. USER INTERFACE
 # ==========================================
 with st.sidebar:
-    st.success("✅ Context Injection ON")
+    st.success("✅ High Quota Mode")
     if st.button("Hapus Cache"):
         st.cache_data.clear()
 
@@ -254,22 +245,18 @@ col1, col2 = st.columns([1, 1.5])
 with col1:
     st.subheader("📝 Input PO")
     raw_text = st.text_area("Paste Chat Sales:", height=450)
-    process_btn = st.button("🚀 PROSES (100% FIX)", type="primary", use_container_width=True)
+    process_btn = st.button("🚀 PROSES (STABIL)", type="primary", use_container_width=True)
 
 with col2:
     st.subheader("📊 Hasil Analisa")
     
     if process_btn and raw_text:
-        with st.spinner("🤖 Injecting Brand Context & Scanning..."):
+        with st.spinner("🤖 Injecting Context & Processing..."):
             
-            # 1. INJECT CONTEXT (THE MAGIC STEP)
-            # Ini mengubah "Brown 6pcs" menjadi "Diosys Brown 6pcs"
+            # 1. INJECT CONTEXT
             injected_text = inject_context(raw_text, df_db)
             
-            # Debugging: Lihat apa yang dilihat AI (Opsional, bisa dihapus)
-            # st.text_area("Debug: Text sent to AI", injected_text, height=100)
-            
-            # 2. Get Context based on injected text
+            # 2. Get Context
             smart_df = get_smart_context(injected_text, df_db)
             
             # 3. AI Process
@@ -305,5 +292,7 @@ with col2:
                 st.download_button("📥 Download Excel", data=buffer.getvalue(), file_name="PO_Fixed.xlsx", mime="application/vnd.ms-excel")
                 
             else:
-                st.error("Gagal membaca respon AI.")
+                st.error("Gagal.")
                 st.write("Detail Error:", info)
+                if "429" in info:
+                    st.warning("⚠️ Kuota harian habis. Silakan buat API Key baru lagi atau tunggu besok.")
