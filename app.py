@@ -10,11 +10,11 @@ import io
 # ==========================================
 # 1. KONFIGURASI HALAMAN
 # ==========================================
-st.set_page_config(page_title="AI Fakturis Stabil", page_icon="🛡️", layout="wide")
-st.title("🛡️ AI Fakturis Pro (Auto-Detect + Brand Aware)")
+st.set_page_config(page_title="AI Fakturis Ultimate", page_icon="💎", layout="wide")
+st.title("💎 AI Fakturis Pro (Hierarchical Context)")
 st.markdown("""
-**Status:** Stabil.
-**Teknologi:** Auto-Detect Model (Anti-404) + Brand Detection Context.
+**Status:** AI Hierarki Aktif.
+**Fitur Baru:** Membaca "Induk Brand" untuk varian di bawahnya (Solusi Diosys).
 """)
 
 # --- API KEY ---
@@ -58,7 +58,7 @@ def load_data():
 df_db = load_data()
 
 # ==========================================
-# 3. SMART CONTEXT GENERATOR (Brand Aware)
+# 3. SMART CONTEXT GENERATOR
 # ==========================================
 def get_smart_context(raw_text, df):
     text_lower = raw_text.lower()
@@ -81,21 +81,18 @@ def get_smart_context(raw_text, df):
         if alias in text_lower and real not in found_brands:
             found_brands.append(real)
 
-    # Filter Logic
     if found_brands:
         brand_df = df[df['Merk'].isin(found_brands)]
-        # Jika item sedikit, tambah backup TF-IDF agar aman
-        if len(brand_df) < 50:
-            vectorizer = TfidfVectorizer(analyzer='word', ngram_range=(1, 2))
-            matrix = vectorizer.fit_transform(df['Search_Key'])
-            clean_chat = re.sub(r'[^a-zA-Z0-9\s]', ' ', text_lower)
-            query_vec = vectorizer.transform([clean_chat])
-            scores = cosine_similarity(query_vec, matrix).flatten()
-            top_indices = scores.argsort()[-50:][::-1]
-            text_df = df.iloc[top_indices]
-            return pd.concat([brand_df, text_df]).drop_duplicates(subset=['Kode'])
-        else:
-            return brand_df
+        # Selalu tambahkan top 100 kemiripan teks biasa sebagai cadangan
+        vectorizer = TfidfVectorizer(analyzer='word', ngram_range=(1, 2))
+        matrix = vectorizer.fit_transform(df['Search_Key'])
+        clean_chat = re.sub(r'[^a-zA-Z0-9\s]', ' ', text_lower)
+        query_vec = vectorizer.transform([clean_chat])
+        scores = cosine_similarity(query_vec, matrix).flatten()
+        top_indices = scores.argsort()[-100:][::-1]
+        text_df = df.iloc[top_indices]
+        
+        return pd.concat([brand_df, text_df]).drop_duplicates(subset=['Kode'])
     else:
         # Fallback biasa
         vectorizer = TfidfVectorizer(analyzer='word', ngram_range=(1, 2))
@@ -107,38 +104,30 @@ def get_smart_context(raw_text, df):
         return df.iloc[top_indices]
 
 # ==========================================
-# 4. MODEL AUTO-DETECT (ANTI-404)
+# 4. MODEL AUTO-DETECT
 # ==========================================
 def find_working_model():
-    """Mencari model yang valid di akun user"""
     try:
         available_models = []
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 available_models.append(m.name)
         
-        # Prioritas Model (Cari yang ada di list user)
         priority_list = [
-            "models/gemini-1.5-flash",
+            "models/gemini-1.5-flash", # Terbaik untuk konteks panjang
             "models/gemini-1.5-pro",
             "models/gemini-1.0-pro",
             "models/gemini-pro"
         ]
         
         for p in priority_list:
-            if p in available_models:
-                return p
-        
-        # Jika tidak ada yang cocok, ambil yang pertama tersedia
-        if available_models:
-            return available_models[0]
-            
-        return "models/gemini-pro" # Harapan terakhir
+            if p in available_models: return p
+        return available_models[0] if available_models else "models/gemini-pro"
     except:
         return "models/gemini-pro"
 
 # ==========================================
-# 5. AI PROCESSOR
+# 5. AI PROCESSOR (PROMPT DIPERBAIKI)
 # ==========================================
 def clean_and_parse_json(text_response):
     try:
@@ -155,10 +144,7 @@ def clean_and_parse_json(text_response):
 
 def process_with_ai(api_key, raw_text, context_df):
     genai.configure(api_key=api_key)
-    
-    # --- AUTO DETECT MODEL ---
     model_name = find_working_model()
-    # -------------------------
     
     generation_config = {
         "temperature": 0.1,
@@ -169,6 +155,7 @@ def process_with_ai(api_key, raw_text, context_df):
         model = genai.GenerativeModel(model_name=model_name, generation_config=generation_config)
         csv_context = context_df[['Kode', 'Nama', 'Merk']].to_csv(index=False)
 
+        # --- PROMPT RAHASIA ---
         prompt = f"""
         Role: Expert Data Entry.
         Task: Extract items from INPUT CHAT based on CANDIDATE LIST.
@@ -179,16 +166,34 @@ def process_with_ai(api_key, raw_text, context_df):
         INPUT CHAT:
         {raw_text}
         
-        RULES:
-        1. Context Hierarchy: 
-           - Header "Diosys 100ml" applies to lines below it (N.black, Red wine, etc) -> "Diosys 100ml Natural Black".
-        2. Quantity: 
-           - "12pcs (12+1)" -> Qty: 12, Bonus: 1.
-        3. Typo Fix: "Cerry" -> "Cherry".
+        CRITICAL RULES (HIERARCHY & CONTEXT):
+        1. PARENT HEADER RULE: If a line contains a Brand Name (e.g., "Diosys"), all lines below it belong to that Brand until a new Brand appears.
+           - Example Input:
+             Diosys 100ml
+             N.black
+             D.brown
+           - Logic: "N.black" -> "Diosys Natural Black". "D.brown" -> "Diosys Dark Brown".
         
-        OUTPUT JSON:
+        2. COLOR CODES MAPPING:
+           - "N.black" = "Natural Black"
+           - "D.brown" = "Dark Brown"
+           - "BL" = "Bleaching"
+           - "Cerry" = "Cherry"
+           - "Red wine" = "Red Wine" (Exact match)
+        
+        3. QUANTITY LOGIC:
+           - "12pcs (12+1)" -> Qty: 12, Keterangan: Bonus 1.
+           - "(24+3)" in Header -> Apply "Bonus 3" to items if they are bundled, otherwise use item's own qty.
+           - "12pcs" -> Qty: 12.
+        
+        4. OUTPUT:
+           - Must be a valid JSON Array.
+           - Map each item to the EXACT "Nama" and "Kode" from CANDIDATE LIST.
+           - If item found, set "found": true.
+        
+        JSON STRUCTURE:
         [
-            {{"kode": "DB_CODE", "nama_barang": "DB_NAME", "qty_input": "12", "keterangan": "Bonus 1"}}
+            {{"kode": "DB_CODE", "nama_barang": "DB_NAME", "qty_input": "12", "keterangan": "Bonus info"}}
         ]
         """
         
@@ -203,7 +208,7 @@ def process_with_ai(api_key, raw_text, context_df):
 # 6. USER INTERFACE
 # ==========================================
 with st.sidebar:
-    st.success("✅ Sistem Stabil")
+    st.success("✅ AI Hierarki Aktif")
     if st.button("Hapus Cache"):
         st.cache_data.clear()
 
@@ -212,13 +217,13 @@ col1, col2 = st.columns([1, 1.5])
 with col1:
     st.subheader("📝 Input PO")
     raw_text = st.text_area("Paste Chat Sales:", height=450)
-    process_btn = st.button("🚀 PROSES (AUTO)", type="primary", use_container_width=True)
+    process_btn = st.button("🚀 PROSES (HIERARKI)", type="primary", use_container_width=True)
 
 with col2:
     st.subheader("📊 Hasil Analisa")
     
     if process_btn and raw_text:
-        with st.spinner("🤖 Mencari Model & Menganalisa..."):
+        with st.spinner("🤖 AI sedang membaca hierarki (Induk-Anak)..."):
             smart_df = get_smart_context(raw_text, df_db)
             ai_results, info = process_with_ai(API_KEY_RAHASIA, raw_text, smart_df)
             
