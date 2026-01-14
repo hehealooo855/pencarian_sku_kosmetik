@@ -11,10 +11,10 @@ import io
 # 1. KONFIGURASI HALAMAN
 # ==========================================
 st.set_page_config(page_title="AI Fakturis Ultimate", page_icon="💎", layout="wide")
-st.title("💎 AI Fakturis Pro (Auto-Detect Model)")
+st.title("💎 AI Fakturis Pro (Typo Killer)")
 st.markdown("""
-**Status:** Auto-Detect Model Active.
-**Fix:** Mencari model AI yang tersedia secara otomatis (Anti Error 404).
+**Status:** Stabil (Auto-Detect Model).
+**Fix:** Menangani typo parah sales (Brwon, Coffe, Cerry) agar terbaca sebagai varian Diosys.
 """)
 
 # --- PENTING: TEMPEL KUNCI BARU ANDA DI SINI ---
@@ -58,22 +58,29 @@ def load_data():
 df_db = load_data()
 
 # ==========================================
-# 3. TEXT PRE-PROCESSOR (KAMUS SINGKATAN)
+# 3. TEXT PRE-PROCESSOR (KAMUS TYPO & SINGKATAN)
 # ==========================================
 def expand_abbreviations(text):
     """
-    Mengubah singkatan sales menjadi nama lengkap agar AI paham.
-    Contoh: 'N.black' -> 'Natural Black'
+    Mengubah singkatan dan TYPO sales menjadi nama lengkap yang benar.
     """
     replacements = {
+        # Singkatan Warna
         r"\bn\.black": "Natural Black",
         r"\bd\.brown": "Dark Brown",
         r"\bl\.blonde": "Light Blonde",
         r"\bg\.blonde": "Golden Blonde",
         r"\bbl\b": "Bleaching",
-        r"\bcerry": "Cherry",
         r"\bblue bl": "Blue Bleaching",
         r"\bash": "Ash Grey",
+        
+        # TYPO PARAH (Diosys Case)
+        r"\bd\.brwon": "Dark Brown",  # Typo: Brwon -> Brown
+        r"\bbrwon": "Brown",          # Typo: Brwon -> Brown
+        r"\bcoffe": "Coffee",         # Typo: Coffe -> Coffee
+        r"\bcerry": "Cherry",         # Typo: Cerry -> Cherry
+        
+        # Brand Typos
         r"tiga kenza": "Tiga Kenza", 
     }
     
@@ -113,7 +120,7 @@ def get_smart_context(raw_text, df):
         # Ambil SEMUA item dari brand yang terdeteksi
         brand_df = df[df['Merk'].isin(found_brands)]
         
-        # Tambahkan backup TF-IDF untuk item non-brand
+        # Tambahkan backup TF-IDF untuk item non-brand (jaga-jaga)
         vectorizer = TfidfVectorizer(analyzer='word', ngram_range=(1, 2))
         matrix = vectorizer.fit_transform(df['Search_Key'])
         clean_search = re.sub(r'[^a-zA-Z0-9\s]', ' ', clean_text)
@@ -172,7 +179,7 @@ def process_with_ai(api_key, raw_text, context_df):
     # Cari model yang valid dulu
     model_name = get_available_model(api_key)
     
-    # Pre-process text sebelum dikirim ke AI
+    # Pre-process text sebelum dikirim ke AI (Perbaiki Typo disini)
     optimized_text = expand_abbreviations(raw_text)
     
     generation_config = {
@@ -197,8 +204,9 @@ def process_with_ai(api_key, raw_text, context_df):
         INSTRUCTIONS:
         1. Process EVERY line. Do NOT skip any line containing quantity.
         2. Context Hierarchy: 
-           - Header "Diosys 100ml" applies to ALL lines below it (N.black, Brown, Coffee, etc) until a new brand appears.
+           - Header "Diosys 100ml" applies to ALL lines below it (Natural Black, Brown, Coffee, etc) until a new brand appears.
            - "Brown" under "Diosys" means "Diosys Brown".
+           - "Coffee" under "Diosys" means "Diosys Coffee".
         3. Quantity Logic: 
            - "(24+3)" in Header means items are bundled/bonus.
            - Line "N.black 12pcs" means Qty: 12.
@@ -221,7 +229,7 @@ def process_with_ai(api_key, raw_text, context_df):
 # 7. USER INTERFACE
 # ==========================================
 with st.sidebar:
-    st.success("✅ AI Auto-Detect Aktif")
+    st.success("✅ AI Typo Killer Aktif")
     if st.button("Hapus Cache"):
         st.cache_data.clear()
 
@@ -230,13 +238,13 @@ col1, col2 = st.columns([1, 1.5])
 with col1:
     st.subheader("📝 Input PO")
     raw_text = st.text_area("Paste Chat Sales:", height=450)
-    process_btn = st.button("🚀 PROSES", type="primary", use_container_width=True)
+    process_btn = st.button("🚀 PROSES (LENGKAP)", type="primary", use_container_width=True)
 
 with col2:
     st.subheader("📊 Hasil Analisa")
     
     if process_btn and raw_text:
-        with st.spinner("🤖 Mencari Model AI & Menganalisa..."):
+        with st.spinner("🤖 Memperbaiki Typo (Brwon -> Brown) & Scan Database..."):
             
             # 1. Get Context
             smart_df = get_smart_context(raw_text, df_db)
