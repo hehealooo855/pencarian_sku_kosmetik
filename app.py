@@ -12,7 +12,7 @@ st.set_page_config(page_title="AI Fakturis Gen-AI", page_icon="🧠", layout="wi
 st.title("🧠 AI Fakturis Pro (Auto-Key)")
 st.markdown("""
 **Status:** API Key Terhubung Otomatis.
-**Teknologi:** Google Gemini 1.5 Flash (LLM).
+**Teknologi:** Google Gemini (Stable Model).
 """)
 
 # --- API KEY DITANAM DISINI ---
@@ -56,13 +56,9 @@ def load_data():
 df_db = load_data()
 
 # ==========================================
-# 3. AI ENGINE (GEMINI 1.5 FLASH)
+# 3. AI ENGINE (GEMINI PRO - STABLE)
 # ==========================================
 def get_relevant_products(raw_text, df):
-    """
-    RAG Logic: Hanya ambil produk dari Brand yang disebut di chat
-    untuk menghemat token dan meningkatkan akurasi.
-    """
     text_lower = raw_text.lower()
     found_brands = []
     
@@ -74,7 +70,7 @@ def get_relevant_products(raw_text, df):
         if str(brand).lower() in text_lower:
             found_brands.append(brand)
     
-    # Tambahkan Brand Alias manual jika perlu (untuk brand yang sering disingkat)
+    # Alias Manual
     aliases = {
         "kim": "KIM", "whitelab": "WHITELAB", "bonavie": "BONAVIE", 
         "goute": "GOUTE", "syb": "SYB", "yu chun mei": "YU CHUN MEI", 
@@ -84,69 +80,64 @@ def get_relevant_products(raw_text, df):
         if alias in text_lower:
             found_brands.append(real)
             
-    # Jika tidak ada brand terdeteksi, kembalikan semua (atau kosongkan strategi)
     if not found_brands:
-        return df # Fallback: Kirim semua (hati-hati token limit)
+        return df 
     
-    # Filter DataFrame
     return df[df['Merk'].isin(found_brands)]
 
 def process_with_ai(api_key, raw_text, relevant_df):
     genai.configure(api_key=api_key)
     
-    # Konfigurasi Model
+    # --- PERBAIKAN: GANTI MODEL KE GEMINI-PRO (LEBIH STABIL) ---
+    # Jika gemini-pro masih error, coba ganti string ini jadi "models/gemini-pro"
+    model_name = "gemini-pro" 
+    
     generation_config = {
-        "temperature": 0.2, # Rendah agar tidak halusinasi
+        "temperature": 0.2, 
         "top_p": 0.95,
         "top_k": 64,
         "max_output_tokens": 8192,
-        "response_mime_type": "application/json",
+        # Gemini Pro (versi lama) kadang rewel dengan response_mime_type JSON
+        # Jadi kita hapus baris mime_type, dan kita parsing manual teksnya.
     }
     
-    model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        generation_config=generation_config,
-    )
-
-    # Ubah data produk jadi String CSV ringkas untuk konteks AI
-    product_context = relevant_df[['Kode', 'Nama', 'Merk']].to_csv(index=False)
-
-    # THE ULTIMATE PROMPT
-    prompt = f"""
-    Anda adalah asisten input order (Fakturis) yang sangat teliti.
-    
-    TUGAS:
-    Ekstrak item pesanan dari "INPUT CHAT" dan cocokkan dengan "DATABASE PRODUK" secara tepat.
-    
-    ATURAN KONTEKS (PENTING):
-    1. Chat sering menggunakan struktur Induk-Anak. 
-       Contoh:
-       "Goute Cushion" (Header)
-       "01: 12pcs" (Item Anak -> Artinya "Goute Cushion 01")
-    2. Jika ada kata "All" atau "Campur", pecahkan menjadi varian yang mungkin ada di database jika masuk akal, atau biarkan sebagai catatan.
-    3. Hati-hati dengan Brand. Jangan tertukar antar brand.
-    4. Perbaiki Typo secara otomatis (misal "Trii" -> "Tree", "Creme" -> "Cream").
-    5. Kenali format qty aneh: ":12pcs", "x12", "12pc", "@12".
-    
-    DATABASE PRODUK (Hanya pilih dari sini):
-    {product_context}
-    
-    INPUT CHAT:
-    {raw_text}
-    
-    OUTPUT FORMAT (JSON Array):
-    [
-        {{"kode": "KODE_DARI_DB", "nama_barang": "NAMA_PERSIS_DARI_DB", "qty_input": "12", "keterangan": "Bonus/Note jika ada"}}
-    ]
-    
-    Jika item tidak ditemukan di database sama sekali, beri kode "UNKNOWN".
-    """
-
     try:
+        model = genai.GenerativeModel(
+            model_name=model_name,
+            generation_config=generation_config,
+        )
+
+        product_context = relevant_df[['Kode', 'Nama', 'Merk']].to_csv(index=False)
+
+        # PROMPT YANG DIOPTIMALKAN UNTUK GEMINI PRO
+        prompt = f"""
+        Anda adalah parser PO Sales. Tugas: Ekstrak item dari CHAT dan cari Kode Barangnya di DATABASE.
+        
+        ATURAN:
+        1. "Goute Cushion" baris baru "01: 12pcs" -> "Goute Cushion 01".
+        2. "Serum:12pcs" -> Qty 12.
+        3. Perbaiki Typo (Trii -> Tree).
+        
+        DATABASE:
+        {product_context}
+        
+        CHAT:
+        {raw_text}
+        
+        OUTPUT HARUS JSON ARRAY MURNI SEPERTI INI (JANGAN ADA TEKS LAIN):
+        [
+            {{"kode": "KODE_DB", "nama_barang": "NAMA_DB", "qty_input": "12", "keterangan": "..."}}
+        ]
+        """
+
         response = model.generate_content(prompt)
-        return json.loads(response.text)
+        
+        # Bersihkan response (kadang AI nambahin ```json di awal)
+        clean_json = response.text.replace("```json", "").replace("```", "").strip()
+        return json.loads(clean_json)
+
     except Exception as e:
-        st.error(f"AI Error: {e}")
+        st.error(f"AI Error ({model_name}): {e}")
         return []
 
 # ==========================================
@@ -154,6 +145,18 @@ def process_with_ai(api_key, raw_text, relevant_df):
 # ==========================================
 with st.sidebar:
     st.success("✅ API Key Terhubung")
+    
+    # --- FITUR DEBUGGING ---
+    if st.checkbox("🔍 Cek Model Tersedia"):
+        try:
+            genai.configure(api_key=API_KEY_RAHASIA)
+            st.write("Daftar Model yang Bisa Dipakai:")
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    st.code(m.name)
+        except Exception as e:
+            st.error(f"Gagal list model: {e}")
+
     if st.button("Hapus Cache"):
         st.cache_data.clear()
 
@@ -172,18 +175,14 @@ with col2:
         if not raw_text:
             st.warning("⚠️ Teks input kosong.")
         else:
-            with st.spinner("🤖 AI sedang membaca konteks, memperbaiki typo, dan mencocokkan database..."):
-                # 1. Filter DB biar irit token & fokus
+            with st.spinner("🤖 AI Sedang Bekerja (Model: Gemini Pro)..."):
                 relevant_df = get_relevant_products(raw_text, df_db)
-                
-                # 2. Kirim ke Gemini (Pakai Kunci Otomatis)
                 ai_results = process_with_ai(API_KEY_RAHASIA, raw_text, relevant_df)
                 
                 if ai_results:
                     st.success("Analisa Selesai!")
                     df_res = pd.DataFrame(ai_results)
                     
-                    # Rename untuk tampilan
                     df_display = df_res.rename(columns={
                         "kode": "Kode", 
                         "nama_barang": "Nama Barang", 
@@ -193,9 +192,7 @@ with col2:
                     
                     st.dataframe(df_display, hide_index=True, use_container_width=True)
                     
-                    # Fitur Copy
                     txt_output = ""
-                    # Cek nama toko (Baris pertama biasanya)
                     first_line = raw_text.split('\n')[0]
                     txt_output += f"Customer: {first_line}\n"
                     
@@ -205,7 +202,6 @@ with col2:
                     
                     st.text_area("Siap Copy:", value=txt_output, height=200)
                     
-                    # Download Excel
                     buffer = io.BytesIO()
                     with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                         df_display.to_excel(writer, index=False, sheet_name='PO')
@@ -217,4 +213,4 @@ with col2:
                         mime="application/vnd.ms-excel"
                     )
                 else:
-                    st.error("AI tidak mengembalikan data. Coba cek format input atau koneksi.")
+                    st.error("AI Gagal. Cek koneksi atau kuota API.")
