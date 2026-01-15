@@ -19,7 +19,7 @@ st.markdown("""
 """)
 
 # --- TEMPEL API KEY BARU ANDA DI SINI ---
-API_KEY_RAHASIA = "PASTE_KUNCI_BARU_ANDA_DISINI" 
+API_KEY_RAHASIA = "AIzaSyBRCb7tZE_9etCicL4Td3nlb5cg9wzVgVs" 
 
 # ==========================================
 # 2. LOAD DATABASE
