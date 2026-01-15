@@ -12,15 +12,14 @@ import time
 # 1. KONFIGURASI HALAMAN
 # ==========================================
 st.set_page_config(page_title="AI Fakturis Final", page_icon="👑", layout="wide")
-st.title("👑 AI Fakturis Pro (Dynamic Core)")
+st.title("👑 AI Fakturis Pro (Precision Mode)")
 st.markdown("""
-**Status:** Dynamic Model Discovery.
-**Teknologi:** Mencari model aktif secara otomatis (Anti-404).
-**Fitur:** Diosys Context Injection + Typo Fixer.
+**Status:** Precision Filter Active.
+**Fitur:** Strict Size Matching (Anti Salah Ukuran) + Auto-Detect Model.
 """)
 
 # --- TEMPEL API KEY BARU ANDA DI SINI ---
-API_KEY_RAHASIA = "AIzaSyBRCb7tZE_9etCicL4Td3nlb5cg9wzVgVs" 
+API_KEY_RAHASIA = "PASTE_KUNCI_BARU_ANDA_DISINI" 
 
 # ==========================================
 # 2. LOAD DATABASE
@@ -59,7 +58,7 @@ def load_data():
 df_db = load_data()
 
 # ==========================================
-# 3. TEXT ENGINE (DIOSYS FIXER)
+# 3. TEXT ENGINE (CLEANER & INJECTOR)
 # ==========================================
 def clean_typos(text):
     """Membersihkan typo sales"""
@@ -77,6 +76,9 @@ def clean_typos(text):
         r"\bash": "Ash Grey",
         r"red wine": "Red Wine",
         r"tiga kenza": "Tiga Kenza",
+        # Tambahan untuk kasus Aku Ayu
+        r"goatmilk": "Goat Milk",
+        r"greentea": "Green Tea",
     }
     text_lower = text.lower()
     for pattern, replacement in replacements.items():
@@ -86,8 +88,6 @@ def clean_typos(text):
 def inject_context(raw_text, df):
     """
     Menempelkan Brand ke setiap baris item secara paksa.
-    Input: "Brwon 6pcs" (setelah header Diosys)
-    Output: "Diosys Brown 6pcs"
     """
     lines = raw_text.split('\n')
     new_lines = []
@@ -96,9 +96,13 @@ def inject_context(raw_text, df):
     all_brands = df['Merk'].dropna().unique()
     brand_list = [str(b).lower() for b in all_brands]
     
-    aliases = {"kim": "kim", "whitelab": "whitelab", "bonavie": "bonavie", 
-               "goute": "goute", "syb": "syb", "thai": "thai", "javinci": "javinci", 
-               "diosys": "diosys", "implora": "implora"}
+    # Update Alias: Tambahkan "aku ayu" agar terdeteksi sebagai brand
+    aliases = {
+        "kim": "kim", "whitelab": "whitelab", "bonavie": "bonavie", 
+        "goute": "goute", "syb": "syb", "thai": "thai", "javinci": "javinci", 
+        "diosys": "diosys", "implora": "implora", "aku ayu": "aku ayu",
+        "hanasui": "hanasui"
+    }
 
     for line in lines:
         clean_line = clean_typos(line) 
@@ -118,9 +122,8 @@ def inject_context(raw_text, df):
                     found_brand_in_line = True
                     break
         
-        # Inject Brand ke Item Anak
+        # Inject Brand ke Item Anak (hanya jika ada angka)
         if re.search(r'\d+', clean_line):
-            # Jika baris ini punya angka TAPI tidak punya nama brand
             if current_brand and current_brand not in clean_line:
                 new_line = f"{current_brand} {clean_line}"
                 new_lines.append(new_line)
@@ -163,7 +166,7 @@ def get_smart_context(processed_text, df):
         return df.iloc[top_indices]
 
 # ==========================================
-# 5. AI PROCESSOR (DYNAMIC BLIND DISCOVERY)
+# 5. AI PROCESSOR (STRICT PROMPT)
 # ==========================================
 def clean_and_parse_json(text_response):
     try:
@@ -185,12 +188,8 @@ def get_any_active_model():
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 active_models.append(m.name)
-        
-        # Urutkan: Prefer Flash atau Pro
-        active_models.sort(key=lambda x: 'flash' not in x) # Flash duluan biar cepat
-        
-        if active_models:
-            return active_models
+        active_models.sort(key=lambda x: 'flash' not in x)
+        if active_models: return active_models
         return []
     except Exception as e:
         return []
@@ -198,65 +197,67 @@ def get_any_active_model():
 def process_with_ai(api_key, processed_text, context_df):
     genai.configure(api_key=api_key)
     
-    # 1. CARI MODEL YANG HIDUP (BLIND DISCOVERY)
+    # 1. CARI MODEL
     available_models = get_any_active_model()
-    
     if not available_models:
-        return [], "CRITICAL: Tidak ada model AI yang ditemukan di akun ini. Cek API Key."
+        return [], "CRITICAL: Tidak ada model AI yang ditemukan. Cek API Key."
 
     csv_context = context_df[['Kode', 'Nama', 'Merk']].to_csv(index=False)
     
+    # --- PROMPT DIPERKETAT UNTUK UKURAN & DUPLIKASI ---
     prompt = f"""
-    Role: Expert Data Entry.
-    Task: Map items from INPUT CHAT to CANDIDATE LIST.
+    Role: Senior Data Validator.
+    Task: Extract items from "INPUT CHAT" and match them EXACTLY with "CANDIDATE LIST".
     
     CANDIDATE LIST (Database):
     {csv_context}
     
-    INPUT CHAT (Already Processed):
+    INPUT CHAT (Order Request):
     {processed_text}
     
-    INSTRUCTIONS:
-    1. All items in INPUT CHAT already have Brand Names attached (e.g., "diosys brown"). Use this to find exact match.
-    2. Quantity Logic: 
-        - "(24+3)" header means items below are bundled.
-        - "12pcs (12+1)" means Qty: 12, Note: Bonus 1.
-    3. OUTPUT JSON ONLY:
-        [ {{"kode": "...", "nama_barang": "...", "qty_input": "...", "keterangan": "..."}} ]
+    STRICT RULES (READ CAREFULLY):
+    1. EXACT MATCH ONLY: You must match the "INPUT CHAT" item to a database item.
+    2. SIZE IS CRITICAL: 
+       - If Input says "250ml", YOU MUST PICK the 250ml item. 
+       - DO NOT pick 500ml, 1kg, or 250gr if the input specifically asks for 250ml.
+       - If Input says "Goatmilk", DO NOT pick "Strawberry".
+    3. NO HALLUCINATION: 
+       - Only list items that are EXPLICITLY requested in the INPUT CHAT with a quantity.
+       - Do not list other variants from the Candidate List just because they are similar.
+    4. ONE INPUT = ONE OUTPUT: Do not output duplicate lines for the same item.
+    
+    OUTPUT FORMAT (JSON ARRAY):
+    [ {{"kode": "...", "nama_barang": "...", "qty_input": "...", "keterangan": "..."}} ]
     """
 
     generation_config = {
-        "temperature": 0.1, 
+        "temperature": 0.0, # Nol Toleransi Kreativitas (Wajib Logis)
         "max_output_tokens": 8192,
     }
 
-    # 2. COBA MODEL SATU PER SATU SAMPAI BERHASIL
     last_error = ""
     for model_name in available_models:
         try:
-            # Skip model vision-only (jika ada)
             if "vision" in model_name: continue
             
             model = genai.GenerativeModel(model_name=model_name, generation_config=generation_config)
             response = model.generate_content(prompt)
             result = clean_and_parse_json(response.text)
             
-            return result, model_name # Berhasil! Keluar loop.
+            return result, model_name 
             
         except Exception as e:
             last_error = str(e)
-            if "429" in str(e): # Kalau limit habis, lanjut model berikutnya
-                continue
-            # Kalau error lain, mungkin lanjut juga
+            if "429" in str(e): continue
             continue
             
-    return [], f"Semua {len(available_models)} model gagal. Err: {last_error}"
+    return [], f"Semua model gagal. Err: {last_error}"
 
 # ==========================================
 # 6. USER INTERFACE
 # ==========================================
 with st.sidebar:
-    st.success("✅ Dynamic Core Active")
+    st.success("✅ Precision Mode ON")
     if st.button("Hapus Cache"):
         st.cache_data.clear()
 
@@ -271,7 +272,7 @@ with col2:
     st.subheader("📊 Hasil Analisa")
     
     if process_btn and raw_text:
-        with st.spinner("🤖 Mencari Model Aktif & Memproses Data..."):
+        with st.spinner("🤖 Mengukur Size & Memproses Data..."):
             
             # 1. INJECT CONTEXT
             injected_text = inject_context(raw_text, df_db)
@@ -279,11 +280,11 @@ with col2:
             # 2. Get Context
             smart_df = get_smart_context(injected_text, df_db)
             
-            # 3. AI Process (Dynamic Discovery)
+            # 3. AI Process
             ai_results, info = process_with_ai(API_KEY_RAHASIA, injected_text, smart_df)
             
             if isinstance(ai_results, list) and len(ai_results) > 0:
-                st.success(f"Sukses! (Menggunakan Model: `{info}`)")
+                st.success(f"Sukses! (Model: `{info}`)")
                 
                 df_res = pd.DataFrame(ai_results)
                 df_res.columns = [x.lower() for x in df_res.columns]
@@ -314,4 +315,4 @@ with col2:
             else:
                 st.error("Gagal.")
                 st.write("Detail Error:", info)
-                st.warning("Pastikan API Key benar dan Anda sudah update requirements.txt!")
+                st.warning("Pastikan API Key benar.")
